@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -86,6 +87,16 @@ void main() {
       Platform.isWindows && Platform.environment['SSE_CAPTURE_UI'] == 'true';
   setUpAll(() async {
     if (!capture) return;
+    // Widget tests otherwise substitute Ahem squares for bundled icon fonts.
+    final manifest =
+        jsonDecode(await rootBundle.loadString('FontManifest.json')) as List;
+    for (final family in manifest) {
+      final loader = FontLoader(family['family'] as String);
+      for (final font in family['fonts'] as List) {
+        loader.addFont(rootBundle.load(font['asset'] as String));
+      }
+      await loader.load();
+    }
     final font = File('${Platform.environment['WINDIR']}/Fonts/msyh.ttc');
     if (await font.exists()) {
       await (FontLoader(
