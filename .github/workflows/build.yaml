@@ -93,7 +93,14 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Windows SSE and native lifecycle regression
-        run: flutter test test/common/sse_history_test.dart test/providers/sse_startup_test.dart test/core/desktop --reporter expanded
+        env:
+          SSE_CAPTURE_UI: 'true'
+        run: flutter test test/common/sse_history_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart test/core/desktop --reporter expanded
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sse-ui-acceptance
+          path: test-output/*.png
       - name: Restore release build hooks
         if: always()
         run: git checkout -- pubspec.yaml

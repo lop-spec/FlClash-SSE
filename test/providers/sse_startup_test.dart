@@ -47,8 +47,14 @@ class _Setup extends SetupAction {
   Future<bool> setRunning(bool running, {bool initialize = false}) async =>
       true;
   @override
-  Future<bool> applyProfile({bool silence = false, bool force = false}) async =>
-      true;
+  Future<bool> applyProfile({
+    bool silence = false,
+    bool force = false,
+    Future<void> Function()? preloadInvoke,
+  }) async {
+    await preloadInvoke?.call();
+    return true;
+  }
 }
 
 Map<String, dynamic> catalog() => {
