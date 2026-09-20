@@ -379,6 +379,11 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     return Card.outlined(
       key: ValueKey('sse-node-${profile.id}-${entry['key']}'),
       margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedSuperellipseBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
       color: selected ? Theme.of(context).colorScheme.secondaryContainer : null,
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
