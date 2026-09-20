@@ -16,6 +16,7 @@ namespace test {
 
 namespace {
 
+using flutter::EncodableList;
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 using flutter::MethodCall;
@@ -148,8 +149,13 @@ struct ProxySettings {
     list.dwSize = sizeof(list);
     list.dwOptionCount = 3;
     list.pOptions = options;
-    return InternetSetOption(
+    const bool applied = InternetSetOption(
         nullptr, INTERNET_OPTION_PER_CONNECTION_OPTION, &list, sizeof(list)) != FALSE;
+    const bool notified = InternetSetOption(
+        nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0) != FALSE;
+    const bool refreshed = InternetSetOption(
+        nullptr, INTERNET_OPTION_REFRESH, nullptr, 0) != FALSE;
+    return applied && notified && refreshed;
   }
 };
 
