@@ -107,6 +107,14 @@ jobs:
         run: git checkout -- pubspec.yaml
       - name: Package isolated installer using upstream setup pipeline
         run: dart setup.dart windows --env stable -v
+      - name: Native system-proxy ownership and coexistence regression
+        run: |
+          cmake -S windows -B build/windows/x64 -Dinclude_proxy_tests=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build/windows/x64 --config Release --target proxy_test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build/windows/x64/plugins/proxy -C Release --output-on-failure --no-tests=error
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Installer isolation, installed-core SSE, restart and uninstall acceptance
         run: ./tool/verify-windows-install.ps1
       - name: Hash assets

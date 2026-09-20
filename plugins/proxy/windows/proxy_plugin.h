@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace proxy {
 
@@ -30,14 +31,19 @@ class ProxyPlugin : public flutter::Plugin {
 
   static bool IsSessionEnding(UINT message, WPARAM wparam);
 
+  static bool OwnsProxySettings(int port, DWORD flags, const std::wstring& server);
+
   std::optional<LRESULT> HandleWindowProc(
       HWND window, UINT message, WPARAM wparam, LPARAM lparam);
 
  private:
+  bool StopOwnedProxy();
+
   flutter::PluginRegistrarWindows* registrar_ = nullptr;
   int window_proc_id_ = -1;
   // Whether this process is the one that pointed Windows at a proxy.
   bool proxy_applied_ = false;
+  int proxy_port_ = 0;
 };
 
 }  // namespace proxy

@@ -7,6 +7,7 @@
 #include <Ras.h>
 #include <RasError.h>
 #include <algorithm>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -70,9 +71,41 @@ bool IsStringList(const flutter::EncodableList& values)
 
 bool SetOptionsForConnection(
     INTERNET_PER_CONN_OPTION_LIST& list,
-    LPTSTR connection)
+    LPTSTR connection,
+    int ownedPort)
 {
   list.pszConnection = connection;
+  if (ownedPort != 0)
+  {
+    INTERNET_PER_CONN_OPTION current[2] = {};
+    current[0].dwOption = INTERNET_PER_CONN_FLAGS;
+    current[1].dwOption = INTERNET_PER_CONN_PROXY_SERVER;
+    INTERNET_PER_CONN_OPTION_LIST query = {};
+    query.dwSize = sizeof(query);
+    query.pszConnection = connection;
+    query.dwOptionCount = 2;
+    query.pOptions = current;
+    DWORD size = sizeof(query);
+    const bool queried = InternetQueryOption(
+        nullptr, INTERNET_OPTION_PER_CONNECTION_OPTION, &query, &size) != FALSE;
+    const std::wstring server = current[1].Value.pszValue != nullptr
+        ? current[1].Value.pszValue : L"";
+    if (current[1].Value.pszValue != nullptr)
+    {
+      GlobalFree(current[1].Value.pszValue);
+    }
+    if (!queried)
+    {
+      std::fprintf(stderr, "FlClashSSE: proxy ownership query failed; settings retained\n");
+      return false;
+    }
+    if (!proxy::ProxyPlugin::OwnsProxySettings(
+            ownedPort, current[0].Value.dwValue, server))
+    {
+      std::fprintf(stderr, "FlClashSSE: proxy no longer owned; external settings retained\n");
+      return true;
+    }
+  }
   return InternetSetOption(
       nullptr,
       INTERNET_OPTION_PER_CONNECTION_OPTION,
@@ -80,9 +113,9 @@ bool SetOptionsForConnection(
       sizeof(list)) != FALSE;
 }
 
-bool ApplyOptionsToConnections(INTERNET_PER_CONN_OPTION_LIST& list)
+bool ApplyOptionsToConnections(INTERNET_PER_CONN_OPTION_LIST& list, int ownedPort = 0)
 {
-  bool success = SetOptionsForConnection(list, nullptr);
+  bool success = SetOptionsForConnection(list, nullptr, ownedPort);
 
   DWORD size = 0;
   DWORD count = 0;
@@ -99,7 +132,7 @@ bool ApplyOptionsToConnections(INTERNET_PER_CONN_OPTION_LIST& list)
     {
       for (DWORD i = 0; i < count; i++)
       {
-        success = SetOptionsForConnection(list, entries[i].szEntryName) && success;
+        success = SetOptionsForConnection(list, entries[i].szEntryName, ownedPort) && success;
       }
     }
     else
@@ -149,7 +182,7 @@ bool startProxy(const int port, const flutter::EncodableList& bypassDomain)
   return optionsApplied && settingsNotified;
 }
 
-bool stopProxy()
+bool stopProxy(int ownedPort)
 {
   std::vector<INTERNET_PER_CONN_OPTION> options(1);
 
@@ -161,7 +194,7 @@ bool stopProxy()
   options[0].dwOption = INTERNET_PER_CONN_FLAGS;
   options[0].Value.dwValue = PROXY_TYPE_DIRECT;
 
-  const bool optionsApplied = ApplyOptionsToConnections(list);
+  const bool optionsApplied = ApplyOptionsToConnections(list, ownedPort);
   const bool settingsNotified = NotifySettingsChanged();
   return optionsApplied && settingsNotified;
 }
@@ -214,6 +247,26 @@ namespace proxy
     return message == WM_ENDSESSION && wparam != FALSE;
   }
 
+  bool ProxyPlugin::OwnsProxySettings(
+      int port, DWORD flags, const std::wstring& server)
+  {
+    return port > 0 &&
+        flags == (PROXY_TYPE_DIRECT | PROXY_TYPE_PROXY) &&
+        server == L"127.0.0.1:" + std::to_wstring(port);
+  }
+
+  bool ProxyPlugin::StopOwnedProxy()
+  {
+    if (!proxy_applied_)
+    {
+      std::fprintf(stderr, "FlClashSSE: system proxy never acquired; settings retained\n");
+      return true;
+    }
+    const bool stopped = stopProxy(proxy_port_);
+    proxy_applied_ = !stopped;
+    return stopped;
+  }
+
   // Shutting Windows down kills the process without running the Dart exit path,
   // so the setting survives into a boot with nothing listening behind it.
   std::optional<LRESULT> ProxyPlugin::HandleWindowProc(
@@ -221,7 +274,7 @@ namespace proxy
   {
     if (proxy_applied_ && IsSessionEnding(message, wparam))
     {
-      proxy_applied_ = !stopProxy();
+      StopOwnedProxy();
     }
     return std::nullopt;
   }
@@ -232,9 +285,7 @@ namespace proxy
   {
     if (method_call.method_name() == "StopProxy")
     {
-      const bool stopped = stopProxy();
-      proxy_applied_ = proxy_applied_ && !stopped;
-      result->Success(stopped);
+      result->Success(StopOwnedProxy());
     }
     else if (method_call.method_name() == "StartProxy")
     {
@@ -271,6 +322,7 @@ namespace proxy
       }
       // A start that reports failure can still have written the setting.
       proxy_applied_ = true;
+      proxy_port_ = *port;
       result->Success(startProxy(*port, *bypassDomain));
     }
     else
