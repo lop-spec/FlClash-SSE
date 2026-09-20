@@ -66,7 +66,7 @@ class _SseTestDialogState extends ConsumerState<SseTestDialog> {
           return ((y?['tokPerSec'] as num?) ?? 0).compareTo((x?['tokPerSec'] as num?) ?? 0);
         });
         final labels = {for (final p in ref.watch(profilesProvider)) p.id: p.label};
-        final successful = nodes.where((n) => SseHistory.object(SseHistory.object(store.history[n['key']])['latest'])['status'] == 'done').length;
+        final successful = nodes.where((n) => store.attemptedKeys.contains(n['key']) && SseHistory.object(SseHistory.object(store.history[n['key']])['latest'])['status'] == 'done').length;
         return PopScope(
           canPop: !store.running,
           child: Dialog(
@@ -86,16 +86,16 @@ class _SseTestDialogState extends ConsumerState<SseTestDialog> {
                       const SizedBox(height: 8),
                       Text('本轮测速中 ${(clock.elapsedMilliseconds / 1000).toStringAsFixed(1)} / 20 秒 · 历史有效成绩保持显示'),
                     ] else
-                      Text('${nodes.length} 个去重节点 · 本轮完整成功 $successful · ${(store.elapsedMs / 1000).toStringAsFixed(2)} 秒'),
+                      Text('${nodes.length} 个去重节点 · 本轮 ${store.attemptedKeys.length} 个，完整成功 $successful · ${(store.elapsedMs / 1000).toStringAsFixed(2)} 秒'),
                     if (store.error.isNotEmpty)
                       Padding(padding: const EdgeInsets.only(top: 8), child: Text(store.error, style: TextStyle(color: Theme.of(context).colorScheme.error))),
                     if (store.issues.isNotEmpty)
-                      Text('${store.issues.length} 项订阅/缓存问题：${store.issues.map((i) => '${labels[i['profileId']] ?? i['profileId']}: ${i['error']}').join('；')}'),
+                      Text('${store.issues.length} 项未覆盖（需处理）：${store.issues.map((i) => '${labels[i['profileId']] ?? i['profileId']}: ${i['error']}').join('；')}'),
                     const SizedBox(height: 12),
                     const Divider(),
                     Expanded(
                       child: nodes.isEmpty
-                          ? const Center(child: Text('请先在本隔离版导入并更新订阅。不会读取原版的私有配置。'))
+                          ? Center(child: Text(store.running ? '正在收集所有订阅并并发测速…' : '请先在本隔离版导入并更新订阅。不会读取原版的私有配置。'))
                           : ListView.builder(
                               itemCount: nodes.length,
                               itemBuilder: (context, index) {

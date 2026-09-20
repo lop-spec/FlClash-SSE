@@ -218,10 +218,10 @@ void main() {
   group('NetworkProps JSON round-trip', () {
     test('default values', () {
       const props = NetworkProps();
-      expect(props.systemProxy, true);
+      expect(props.systemProxy, false);
       expect(props.bypassDomain, defaultBypassDomain);
       expect(props.routeMode, RouteMode.config);
-      expect(props.autoSetSystemDns, true);
+      expect(props.autoSetSystemDns, false);
       expect(props.appendSystemDns, false);
     });
 

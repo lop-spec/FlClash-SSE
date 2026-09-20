@@ -187,7 +187,7 @@ Map<String, dynamic> _$AuthenticationPropsToJson(
 
 _NetworkProps _$NetworkPropsFromJson(Map<String, dynamic> json) =>
     _NetworkProps(
-      systemProxy: json['systemProxy'] as bool? ?? true,
+      systemProxy: json['systemProxy'] as bool? ?? false,
       bypassDomain:
           (json['bypassDomain'] as List<dynamic>?)
               ?.map((e) => e as String)
@@ -196,7 +196,7 @@ _NetworkProps _$NetworkPropsFromJson(Map<String, dynamic> json) =>
       routeMode:
           $enumDecodeNullable(_$RouteModeEnumMap, json['routeMode']) ??
           RouteMode.config,
-      autoSetSystemDns: json['autoSetSystemDns'] as bool? ?? true,
+      autoSetSystemDns: json['autoSetSystemDns'] as bool? ?? false,
       appendSystemDns: json['appendSystemDns'] as bool? ?? false,
       authentication: json['authentication'] == null
           ? defaultAuthenticationProps

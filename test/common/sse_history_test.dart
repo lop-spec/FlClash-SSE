@@ -6,6 +6,7 @@ Map<String, dynamic> good(double speed) => {
   'tokens': 161,
   'tokPerSec': speed,
   'elapsedMs': 8400,
+  'flowPass': true,
 };
 
 void main() {

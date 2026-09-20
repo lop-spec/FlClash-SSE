@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,6 +45,23 @@ type sample struct {
 	SentMs      float64 `json:"sentMs"`
 	ScheduledMs float64 `json:"scheduledMs"`
 }
+
+func (s *sample) UnmarshalJSON(data []byte) error {
+	var fields struct {
+		Seq         *int     `json:"seq"`
+		SentMs      *float64 `json:"sentMs"`
+		ScheduledMs *float64 `json:"scheduledMs"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields.Seq == nil || fields.SentMs == nil || fields.ScheduledMs == nil {
+		return fmt.Errorf("missing sample clock or sequence")
+	}
+	s.Seq, s.SentMs, s.ScheduledMs = *fields.Seq, *fields.SentMs, *fields.ScheduledMs
+	return nil
+}
+
 type arrival struct {
 	sample
 	at float64
@@ -166,37 +183,68 @@ func Run(ctx context.Context, jobs []Job, concurrency int) []Result {
 	if concurrency > MaxConcurrency {
 		concurrency = MaxConcurrency
 	}
+	ctx, cancel := context.WithTimeout(ctx, Budget)
+	defer cancel()
 	results := make([]Result, len(jobs))
+	started := make([]atomic.Bool, len(jobs))
+	for i, job := range jobs {
+		results[i] = job.Base
+		results[i].Status = "unmeasured"
+		results[i].Error = "batch deadline reached before start"
+	}
+	type completed struct {
+		index int
+		value Result
+	}
+	replies := make(chan completed, concurrency)
 	tasks := make(chan int)
-	var wg sync.WaitGroup
 	for w := 0; w < concurrency && w < len(jobs); w++ {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			for i := range tasks {
-				value := Result{Status: "unmeasured", Error: "batch deadline reached before start"}
-				if ctx.Err() == nil {
-					value = jobs[i].Probe(ctx)
+				if ctx.Err() != nil {
+					return
 				}
-				value.Key = jobs[i].Base.Key
-				value.Name = jobs[i].Base.Name
-				value.Profiles = jobs[i].Base.Profiles
-				results[i] = value
+				started[i].Store(true)
+				value := jobs[i].Probe(ctx)
+				select {
+				case replies <- completed{i, value}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}()
 	}
-	ramp := time.NewTicker(time.Millisecond)
-	defer ramp.Stop()
-	for i := range jobs {
-		if ctx.Err() == nil {
+	go func() {
+		defer close(tasks)
+		ramp := time.NewTicker(time.Millisecond)
+		defer ramp.Stop()
+		for i := range jobs {
 			select {
 			case <-ramp.C:
 			case <-ctx.Done():
+				return
+			}
+			select {
+			case tasks <- i:
+			case <-ctx.Done():
+				return
 			}
 		}
-		tasks <- i
+	}()
+	for received := 0; received < len(jobs); received++ {
+		select {
+		case reply := <-replies:
+			base := jobs[reply.index].Base
+			reply.value.Key, reply.value.Name, reply.value.Profiles = base.Key, base.Name, base.Profiles
+			results[reply.index] = reply.value
+		case <-ctx.Done():
+			for i := range results {
+				if results[i].Status == "unmeasured" && started[i].Load() {
+					results[i].Status, results[i].Error = "timeout", "batch deadline reached"
+				}
+			}
+			return results
+		}
 	}
-	close(tasks)
-	wg.Wait()
 	return results
 }

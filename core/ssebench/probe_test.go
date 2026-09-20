@@ -35,6 +35,15 @@ func fake(body string) Doer {
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}, "X-Stream-Quality-Profile": {Profile}}, Body: io.NopCloser(strings.NewReader(body))}, nil
 	})
 }
+func TestMissingZeroValuedClockFieldsAreRejected(t *testing.T) {
+	for _, body := range []string{`{"sentMs":0,"scheduledMs":0}`, `{"seq":0,"scheduledMs":0}`, `{"seq":0,"sentMs":0}`, `{"seq":0,"sentMs":null,"scheduledMs":0}`} {
+		var sample sample
+		if json.Unmarshal([]byte(body), &sample) == nil {
+			t.Fatalf("accepted incomplete clock: %s", body)
+		}
+	}
+}
+
 func TestProtocolRejectsTruncationAndSourceFailure(t *testing.T) {
 	var good strings.Builder
 	for i := 0; i < Samples; i++ {
@@ -71,8 +80,15 @@ func TestDeadlineCoversQueuedAndActiveNodes(t *testing.T) {
 	}
 	start := time.Now()
 	rs := Run(ctx, jobs, 32)
-	if time.Since(start) > time.Second || len(rs) != 1200 || peak.Load() > 32 || active.Load() != 0 {
+	if time.Since(start) > time.Second || len(rs) != 1200 || peak.Load() > 32 {
 		t.Fatal("deadline/concurrency/cleanup violated")
+	}
+	deadline := time.Now().Add(time.Second)
+	for active.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if active.Load() != 0 {
+		t.Fatal("context-aware probes did not release")
 	}
 	waiting := 0
 	for i, r := range rs {
@@ -87,6 +103,19 @@ func TestDeadlineCoversQueuedAndActiveNodes(t *testing.T) {
 		t.Fatal("queued requests must explicitly report unmeasured")
 	}
 }
+func TestDeadlineDoesNotWaitForUncooperativeAdapter(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	release := make(chan struct{})
+	defer close(release)
+	jobs := []Job{{Base: Result{Key: "stuck"}, Probe: func(context.Context) Result { <-release; return Result{Status: "done"} }}}
+	start := time.Now()
+	results := Run(ctx, jobs, 1)
+	if time.Since(start) > 200*time.Millisecond || results[0].Status != "timeout" {
+		t.Fatal("deadline waited for adapter shutdown")
+	}
+}
+
 func Test1024RealStreamsWithin20Seconds(t *testing.T) {
 	if testing.Short() {
 		t.Skip("8-second real SSE, two parallel waves")

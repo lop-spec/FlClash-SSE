@@ -9,6 +9,7 @@ class SseHistory extends ChangeNotifier {
   bool running = false;
   String error = '';
   int elapsedMs = 0;
+  Set<String> attemptedKeys = {};
 
   static Map<String, dynamic> object(dynamic value) =>
       value is Map ? Map<String, dynamic>.from(value) : {};
@@ -31,8 +32,12 @@ class SseHistory extends ChangeNotifier {
   }
 
   void accept(Map<String, dynamic> value, {bool replaceNodes = true}) {
-    if (replaceNodes && value['nodes'] is List) {
-      nodes = objects(value['nodes']);
+    if (value['nodes'] is List) {
+      final incoming = objects(value['nodes']);
+      attemptedKeys = incoming.map((n) => n['key'].toString()).toSet();
+      nodes = replaceNodes ? incoming : {
+        for (final n in [...nodes, ...incoming]) n['key']: n,
+      }.values.toList();
     }
     for (final entry in object(value['history']).entries) {
       final next = object(entry.value);
@@ -93,7 +98,8 @@ class SseHistory extends ChangeNotifier {
       );
     });
     for (final node in sorted) {
-      if (success(history[node['key']]) == null) continue;
+      final result = success(history[node['key']]);
+      if (result == null || result['flowPass'] != true) continue;
       for (final alias in objects(node['aliases'])) {
         if (available.contains(alias['profileId'])) {
           return {...alias, 'key': node['key']};

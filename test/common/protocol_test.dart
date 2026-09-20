@@ -27,27 +27,24 @@ void main() {
     test('writes a hidden desktop entry claiming every scheme', () {
       expect(
         plan.desktopPath,
-        '/home/me/.local/share/applications/flclash-url-handler.desktop',
+        '/home/me/.local/share/applications/flclash-sse-url-handler.desktop',
       );
       expect(
         plan.desktopEntry,
         '[Desktop Entry]\n'
         'Type=Application\n'
-        'Name=FlClash\n'
+        'Name=FlClash SSE\n'
         'NoDisplay=true\n'
         'Exec="/home/me/Apps/FlClash.AppImage" %u\n'
-        'MimeType=x-scheme-handler/clash;x-scheme-handler/clashmeta;'
-        'x-scheme-handler/flclash;\n',
+        'MimeType=x-scheme-handler/flclashsse;\n',
       );
     });
 
     test('makes the entry the default handler for every scheme', () {
       expect(plan.xdgMimeArguments, [
         'default',
-        'flclash-url-handler.desktop',
-        'x-scheme-handler/clash',
-        'x-scheme-handler/clashmeta',
-        'x-scheme-handler/flclash',
+        'flclash-sse-url-handler.desktop',
+        'x-scheme-handler/flclashsse',
       ]);
     });
 

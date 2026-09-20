@@ -31,8 +31,7 @@ class ProxyCard extends ConsumerWidget {
     return Consumer(
       builder: (context, ref, _) {
         final profileId = ref.watch(currentProfileIdProvider);
-        final selectedName = ref.watch(selectedProxyNameProvider(groupName));
-        final name = proxy.name == groupName ? selectedName : proxy.name;
+        final name = ref.watch(realSelectedProxyStateProvider(proxy.name)).proxyName;
         final store = SseHistory.instance;
         return ListenableBuilder(
           listenable: store,

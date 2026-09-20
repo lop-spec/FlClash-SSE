@@ -198,18 +198,28 @@ class CoreController {
 
   Future<Map<String, dynamic>> sseCatalog(List<int> profiles) async {
     return await _interface.invokeMethod<Map<String, dynamic>>(
-      method: CoreMethod.sseCatalog,
-      arguments: {'profiles': profiles},
-      timeout: const Duration(seconds: 5),
-    ) ?? <String, dynamic>{};
+          method: CoreMethod.sseCatalog,
+          arguments: {'profiles': profiles},
+          timeout: const Duration(seconds: 5),
+        ) ??
+        <String, dynamic>{};
   }
 
-  Future<Map<String, dynamic>> sseBatch(List<int> profiles, {String? name, int? profileId}) async {
+  Future<Map<String, dynamic>> sseBatch(
+    List<int> profiles, {
+    String? name,
+    int? profileId,
+  }) async {
     return await _interface.invokeMethod<Map<String, dynamic>>(
-      method: CoreMethod.sseBatch,
-      arguments: {'profiles': profiles, 'name': name ?? '', 'profileId': profileId ?? 0},
-      timeout: const Duration(seconds: 20),
-    ) ?? <String, dynamic>{};
+          method: CoreMethod.sseBatch,
+          arguments: {
+            'profiles': profiles,
+            'name': name ?? '',
+            'profileId': profileId ?? 0,
+          },
+          timeout: const Duration(seconds: 20),
+        ) ??
+        <String, dynamic>{};
   }
 
   Future<Delay?> getDelay(String url, String proxyName) async {
