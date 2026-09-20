@@ -7,6 +7,32 @@ class ProfilesAction extends _$ProfilesAction {
   @override
   void build() {}
 
+  /// Subscription cards keep routing groups intact and apply their selector path.
+  Future<void> selectSseNode(Map<String, dynamic> entry) async {
+    final profiles = ref.read(profilesProvider);
+    final profile = profiles
+        .where((p) => p.id == entry['profileId'])
+        .firstOrNull;
+    if (profile == null) throw StateError('订阅已移除，请刷新节点');
+    final selections = SseHistory.object(entry['selections'])
+        .map((key, value) => MapEntry(key, value.toString()));
+    if (selections.isEmpty) throw StateError('节点缺少选择路径，请更新订阅');
+    final changedProfile = ref.read(currentProfileIdProvider) != profile.id;
+    ref
+        .read(profilesProvider.notifier)
+        .put(
+          profile.copyWith(
+            selectedMap: {...profile.selectedMap, ...selections},
+          ),
+        );
+    if (changedProfile) {
+      // CoreManager applies a changed profile, exactly as on the profiles page.
+      ref.read(currentProfileIdProvider.notifier).value = profile.id;
+    } else if (!await ref.read(setupActionProvider.notifier).fullSetup()) {
+      throw StateError('节点配置应用失败，请检查订阅');
+    }
+  }
+
   void updateCurrentSelectedMap(String groupName, String proxyName) {
     final currentProfile = ref.read(currentProfileProvider);
     if (currentProfile != null &&
@@ -105,9 +131,8 @@ class ProfilesAction extends _$ProfilesAction {
     final profile = await globalState.loadingRun(
       tag: LoadingTag.profiles,
       () async {
-        return Profile.normal(
-          label: platformFile.name,
-        ).saveFile(bytes, validate: (path) => _core.validateConfig(path));
+        return Profile.normal(label: platformFile.name)
+            .saveFile(bytes, validate: (path) => _core.validateConfig(path));
       },
       title: currentAppLocalizations.addProfile,
     );
@@ -124,9 +149,8 @@ class ProfilesAction extends _$ProfilesAction {
     final profile = await globalState.loadingRun(
       tag: LoadingTag.profiles,
       () async {
-        return Profile.normal(
-          url: url,
-        ).update(validate: (path) => _core.validateConfig(path));
+        return Profile.normal(url: url)
+            .update(validate: (path) => _core.validateConfig(path));
       },
       title: currentAppLocalizations.addProfile,
     );

@@ -10,6 +10,78 @@ Map<String, dynamic> good(double speed) => {
 };
 
 void main() {
+  test('single-node retest keeps other subscriptions and retires changed connection aliases', () {
+    final store = SseHistory();
+    final a = {'profileId': 1, 'name': 'same'};
+    final b = {'profileId': 2, 'name': 'other'};
+    store.accept({
+      'nodes': [
+        {
+          'key': 'shared',
+          'aliases': [a, b],
+        },
+      ],
+    });
+    store.accept({
+      'nodes': [
+        {
+          'key': 'shared',
+          'aliases': [a],
+        },
+      ],
+    }, replaceNodes: false);
+    expect(store.entriesFor(1).single['key'], 'shared');
+    expect(store.entriesFor(2).single['key'], 'shared');
+    store.accept({
+      'nodes': [
+        {
+          'key': 'changed',
+          'aliases': [a],
+        },
+      ],
+    }, replaceNodes: false);
+    expect(store.entriesFor(1).single['key'], 'changed');
+    expect(store.entriesFor(2).single['key'], 'shared');
+    expect(store.attemptedKeys, {'changed'});
+    store.dispose();
+  });
+  test('subscription memberships are deduplicated, searched and sorted by valid history', () {
+    final store = SseHistory();
+    store.accept({
+      'nodes': [
+        for (final key in ['unmeasured', 'slow', 'fast', 'tie'])
+          {
+            'key': key,
+            'aliases': [
+              {'profileId': 1, 'name': key},
+              {'profileId': 1, 'name': '$key copy'},
+              {'profileId': 2, 'name': '$key alias'},
+            ],
+          },
+      ],
+      'history': {
+        'fast': {'lastSuccess': good(19.8)},
+        'slow': {'lastSuccess': good(17.0)},
+        'tie': {'lastSuccess': good(17.0)},
+        'unmeasured': {'lastSuccess': good(0)},
+      },
+      'elapsedMs': 8512,
+    });
+    expect(store.entriesFor(1).map((n) => n['key']), [
+      'fast',
+      'slow',
+      'tie',
+      'unmeasured',
+    ]);
+    expect(store.entriesFor(2, query: 'FAST').single['name'], 'fast alias');
+    expect(store.entriesFor(1, query: 'copy').length, 4);
+    expect(store.entriesFor(3), isEmpty);
+    store.accept({'nodes': store.nodes, 'elapsedMs': 0}, measurement: false);
+    expect(store.elapsedMs, 8512);
+    expect(store.attemptedKeys.length, 4);
+    store.dispose();
+  });
+
   test('failed, pending and zero scores never erase valid displayed toks', () {
     final store = SseHistory();
     store.accept({

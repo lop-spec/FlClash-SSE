@@ -317,7 +317,7 @@ void main() {
     expect(tester.takeException(), null);
   });
 
-  testWidgets('proxies renders populated tab and list layouts', (tester) async {
+  testWidgets('legacy proxy widgets retain populated tab and list behavior', (tester) async {
     tester.view.physicalSize = const Size(1400, 1000);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
@@ -358,7 +358,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const TestApp(child: ProxiesView()),
+        child: const TestApp(child: Scaffold(body: ProxiesTabView())),
       ),
     );
     await tester.pump();
@@ -370,6 +370,12 @@ void main() {
     container
         .read(proxiesStyleSettingProvider.notifier)
         .update((state) => state.copyWith(type: ProxiesType.list));
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const TestApp(child: Scaffold(body: ProxiesListView())),
+      ),
+    );
     await tester.pump();
     expect(find.byType(ProxiesListView), findsOneWidget);
 

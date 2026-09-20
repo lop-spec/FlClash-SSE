@@ -10,6 +10,7 @@ class SseHistory extends ChangeNotifier {
   String error = '';
   int elapsedMs = 0;
   Set<String> attemptedKeys = {};
+  int _revision = 0;
 
   static Map<String, dynamic> object(dynamic value) =>
       value is Map ? Map<String, dynamic>.from(value) : {};
@@ -30,15 +31,44 @@ class SseHistory extends ChangeNotifier {
         : null;
   }
 
-  void accept(Map<String, dynamic> value, {bool replaceNodes = true}) {
+  void accept(
+    Map<String, dynamic> value, {
+    bool replaceNodes = true,
+    bool measurement = true,
+  }) {
     if (value['nodes'] is List) {
       final incoming = objects(value['nodes']);
-      attemptedKeys = incoming.map((n) => n['key'].toString()).toSet();
-      nodes = replaceNodes
-          ? incoming
-          : {
-              for (final n in [...nodes, ...incoming]) n['key']: n,
-            }.values.toList();
+      if (measurement) {
+        attemptedKeys = incoming.map((n) => n['key'].toString()).toSet();
+      }
+      if (replaceNodes) {
+        nodes = incoming;
+      } else {
+        String identity(Map<String, dynamic> alias) =>
+            '${alias['profileId']}\u0000${alias['name']}';
+        final updated = incoming
+            .expand((n) => objects(n['aliases']))
+            .map(identity)
+            .toSet();
+        final merged = <dynamic, Map<String, dynamic>>{};
+        for (final node in nodes) {
+          final aliases = objects(node['aliases'])
+              .where((a) => !updated.contains(identity(a)))
+              .toList();
+          if (aliases.isNotEmpty)
+            merged[node['key']] = {...node, 'aliases': aliases};
+        }
+        for (final node in incoming) {
+          merged[node['key']] = {
+            ...node,
+            'aliases': [
+              ...objects(merged[node['key']]?['aliases']),
+              ...objects(node['aliases']),
+            ],
+          };
+        }
+        nodes = merged.values.toList();
+      }
     }
     for (final entry in object(value['history']).entries) {
       final next = object(entry.value);
@@ -51,12 +81,17 @@ class SseHistory extends ChangeNotifier {
     }
     issues = objects(value['issues']);
     error = value['error']?.toString() ?? '';
-    elapsedMs = (value['elapsedMs'] as num?)?.toInt() ?? 0;
+    if (measurement) elapsedMs = (value['elapsedMs'] as num?)?.toInt() ?? 0;
     notifyListeners();
   }
 
   Future<void> load(CoreController core, List<int> profiles) async {
-    accept(await core.sseCatalog(profiles));
+    if (running) return;
+    final revision = ++_revision;
+    final value = await core.sseCatalog(profiles);
+    // A slow catalog must not replace a newer measurement or subscription list.
+    if (revision != _revision || running) return;
+    accept(value, measurement: false);
   }
 
   Future<void> run(
@@ -66,6 +101,7 @@ class SseHistory extends ChangeNotifier {
     int? profileId,
   }) async {
     if (running) return;
+    _revision++;
     running = true;
     error = '';
     attemptedKeys = {};
@@ -85,6 +121,29 @@ class SseHistory extends ChangeNotifier {
       running = false;
       notifyListeners();
     }
+  }
+
+  /// One connection per subscription; aliases across subscriptions remain visible.
+  List<Map<String, dynamic>> entriesFor(int profileId, {String query = ''}) {
+    final matches = <Map<String, dynamic>>[];
+    for (final node in nodes) {
+      for (final alias in objects(node['aliases'])) {
+        if (alias['profileId'] != profileId) continue;
+        if (!'${alias['name']}'.toLowerCase().contains(query.toLowerCase()))
+          continue;
+        matches.add({...node, ...alias});
+        break;
+      }
+    }
+    matches.sort((a, b) {
+      final x = success(history[a['key']])?['tokPerSec'] as num?;
+      final y = success(history[b['key']])?['tokPerSec'] as num?;
+      final speed = (y ?? -1).compareTo(x ?? -1);
+      if (speed != 0) return speed;
+      final name = '${a['name']}'.compareTo('${b['name']}');
+      return name != 0 ? name : '${a['key']}'.compareTo('${b['key']}');
+    });
+    return matches;
   }
 
   Map<String, dynamic>? recordFor(int? profileId, String name) {

@@ -67,7 +67,7 @@ class ProxiesTabViewState extends ConsumerState<ProxiesTabView>
     if (group == null) {
       return;
     }
-    await showSseTest(context);
+    await runSseTest(context);
   }
 
   Group? get currentGroup {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:fl_clash/common/sse_history.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/core/desktop/model.dart';
@@ -18,6 +20,7 @@ class _Core extends CoreHandlerInterface {
   final calls = <CoreMethod>[];
   Map<String, dynamic> response = {};
   bool fail = false;
+  Completer<Map<String, dynamic>>? pendingCatalog;
 
   @override
   Future<CoreLifecycleResult> start() async => const CoreLifecycleResult(
@@ -38,11 +41,23 @@ class _Core extends CoreHandlerInterface {
   }) async {
     calls.add(method);
     if (fail) throw StateError('test transport failure');
+    if (method == CoreMethod.sseCatalog && pendingCatalog != null) {
+      return (await pendingCatalog!.future) as T;
+    }
     return response as T;
   }
 }
 
 class _Setup extends SetupAction {
+  int applies = 0;
+  bool applySuccess = true;
+
+  @override
+  Future<bool> fullSetup() async {
+    applies++;
+    return applySuccess;
+  }
+
   @override
   Future<bool> setRunning(bool running, {bool initialize = false}) async =>
       true;
@@ -140,6 +155,73 @@ void main() {
     container.dispose();
     globalState.needInitStatus = true;
   });
+
+  test(
+    'late catalog cannot roll back a completed background measurement',
+    () async {
+      final store = SseHistory();
+      native.pendingCatalog = Completer<Map<String, dynamic>>();
+      final loading = store.load(core, [1, 2]);
+      await store.run(core, [1, 2]);
+      expect(store.nodes, isNotEmpty);
+      final keys = store.attemptedKeys;
+      native.pendingCatalog!.complete({'nodes': [], 'history': {}});
+      await loading;
+      expect(store.nodes, isNotEmpty);
+      expect(store.attemptedKeys, keys);
+      store.dispose();
+    },
+  );
+
+  test('same subscription applies selection paths; invalid and failed choices are reported', () async {
+    final action = container.read(profilesActionProvider.notifier);
+    final setup = container.read(setupActionProvider.notifier) as _Setup;
+    await action.selectSseNode({
+      'profileId': 1,
+      'selections': {'GLOBAL': 'chosen', 'Select': 'chosen'},
+    });
+    expect(container.read(currentProfileIdProvider), 1);
+    expect(
+      container.read(profilesProvider).first.selectedMap['Select'],
+      'chosen',
+    );
+    expect(setup.applies, 1);
+    expect(native.calls, isEmpty);
+    await expectLater(
+      action.selectSseNode({'profileId': 404}),
+      throwsStateError,
+    );
+    await expectLater(action.selectSseNode({'profileId': 1}), throwsStateError);
+    setup.applySuccess = false;
+    await expectLater(
+      action.selectSseNode({
+        'profileId': 1,
+        'selections': {'GLOBAL': 'bad'},
+      }),
+      throwsStateError,
+    );
+  });
+
+  test(
+    'another subscription retains unrelated routes before switching',
+    () async {
+      await container.read(profilesActionProvider.notifier).selectSseNode({
+        'profileId': 2,
+        'selections': {'GLOBAL': 'chosen', 'Select': 'chosen'},
+      });
+      expect(container.read(currentProfileIdProvider), 2);
+      expect(container.read(profilesProvider).last.selectedMap, {
+        'Unrelated': 'keep',
+        'GLOBAL': 'chosen',
+        'Select': 'chosen',
+      });
+      expect(
+        (container.read(setupActionProvider.notifier) as _Setup).applies,
+        0,
+      );
+      expect(native.calls, isEmpty);
+    },
+  );
 
   test('startup selects a surviving flow-passing history candidate without measuring', () async {
     await container.read(setupActionProvider.notifier).initStatus();

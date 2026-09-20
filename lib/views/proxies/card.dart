@@ -50,7 +50,7 @@ class ProxyCard extends ConsumerWidget {
               child: InkWell(
                 onTap: store.running
                     ? null
-                    : () => showSseTest(context, name: name),
+                    : () => runSseTest(context, name: name),
                 child: Text(
                   speed == null
                       ? (store.running ? '测速中…' : 'SSE 测速')

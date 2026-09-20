@@ -381,7 +381,7 @@ class _ListHeaderState extends ConsumerState<ListHeader> {
     if (isLock) return;
     isLock = true;
     try {
-      await showSseTest(context);
+      await runSseTest(context);
     } finally {
       isLock = false;
     }
