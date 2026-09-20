@@ -204,6 +204,12 @@ var methodHandlers = map[CoreMethod]methodHandler{
 		handleResetTraffic()
 		response.success(true)
 	}),
+	sseCatalogMethod: withArguments(func(params *SSEParams, response MethodResponse) {
+		safeGo(response, func() { response.success(handleSSECatalog(params)) })
+	}),
+	sseBatchMethod: withArguments(func(params *SSEParams, response MethodResponse) {
+		safeGo(response, func() { response.success(handleSSEBatch(params)) })
+	}),
 	asyncTestDelayMethod: withArguments(func(params *TestDelayParams, response MethodResponse) {
 		safeGo(response, func() {
 			response.success(handleTestDelay(params))

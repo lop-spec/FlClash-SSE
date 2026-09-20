@@ -1,4 +1,6 @@
 import 'package:fl_clash/common/common.dart';
+import 'package:fl_clash/common/sse_history.dart';
+import 'sse.dart';
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
@@ -25,53 +27,37 @@ class ProxyCard extends ConsumerWidget {
 
   Measure get measure => globalState.measure;
 
-  void _handleTestCurrentDelay(WidgetRef ref) {
-    ref.read(proxiesActionProvider.notifier).proxyDelayTest(proxy, testUrl);
-  }
-
   Widget _buildDelayText() {
-    return SizedBox(
-      height: measure.labelSmallHeight,
-      child: Consumer(
-        builder: (context, ref, _) {
-          final delay = ref.watch(
-            delayProvider(proxyName: proxy.name, testUrl: testUrl),
-          );
-          final pending = ref.watch(
-            delayTestPendingProvider(proxyName: proxy.name, testUrl: testUrl),
-          );
-          return FadeBox(
-            alignment: type == ProxyCardType.expand
-                ? Alignment.centerLeft
-                : Alignment.centerRight,
-            child: pending || delay == null
-                ? SizedBox(
-                    height: measure.labelSmallHeight,
-                    width: measure.labelSmallHeight,
-                    child: pending
-                        ? const CommonCircleLoading()
-                        : IconButton(
-                            tooltip: context.appLocalizations.delayTest,
-                            icon: const Icon(Icons.bolt),
-                            iconSize: globalState.measure.labelSmallHeight,
-                            padding: EdgeInsets.zero,
-                            onPressed: () => _handleTestCurrentDelay(ref),
-                          ),
-                  )
-                : GestureDetector(
-                    onTap: () => _handleTestCurrentDelay(ref),
-                    child: Text(
-                      delay > 0 ? '$delay ms' : 'Timeout',
-                      maxLines: 1,
-                      style: context.textTheme.labelSmall?.copyWith(
-                        overflow: TextOverflow.ellipsis,
-                        color: getDelayColor(delay),
-                      ),
-                    ),
+    return Consumer(
+      builder: (context, ref, _) {
+        final profileId = ref.watch(currentProfileIdProvider);
+        final selectedName = ref.watch(selectedProxyNameProvider(groupName));
+        final name = proxy.name == groupName ? selectedName : proxy.name;
+        final store = SseHistory.instance;
+        return ListenableBuilder(
+          listenable: store,
+          builder: (context, _) {
+            final record = store.recordFor(profileId, name);
+            final good = SseHistory.success(record);
+            final latest = SseHistory.object(record?['latest']);
+            final speed = good?['tokPerSec'] as num?;
+            return Tooltip(
+              message: '模拟 SSE tok/s，不代表模型速度。${store.running ? '本轮测速中，历史成绩保留' : latest['error'] ?? latest['status'] ?? '尚未测速'}',
+              child: InkWell(
+                onTap: store.running ? null : () => showSseTest(context, name: name),
+                child: Text(
+                  speed == null ? (store.running ? '测速中…' : 'SSE 测速') : '${speed.toStringAsFixed(1)} tok/s',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: context.textTheme.labelSmall?.copyWith(
+                    color: good == null ? null : Theme.of(context).colorScheme.primary,
                   ),
-          );
-        },
-      ),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 

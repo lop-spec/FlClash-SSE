@@ -17,6 +17,8 @@ enum CoreMethod {
   getTotalTraffic,
   resetTraffic,
   asyncTestDelay,
+  sseCatalog,
+  sseBatch,
   getConnections,
   closeConnections,
   resetConnections,

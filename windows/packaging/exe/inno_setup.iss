@@ -6,7 +6,8 @@ AppPublisher={{PUBLISHER_NAME}}
 AppPublisherURL={{PUBLISHER_URL}}
 AppSupportURL={{PUBLISHER_URL}}
 AppUpdatesURL={{PUBLISHER_URL}}
-DefaultDirName={{INSTALL_DIR_NAME}}
+DefaultDirName={localappdata}\Programs\FlClashSSE
+CloseApplications=no
 DisableProgramGroupPage=yes
 OutputDir=.
 OutputBaseFilename={{OUTPUT_BASE_FILENAME}}
@@ -19,44 +20,11 @@ ArchitecturesAllowed={{ARCH}}
 ArchitecturesInstallIn64BitMode={{ARCH}}
 
 [Code]
-procedure KillProcesses;
-var
-  Processes: TArrayOfString;
-  i: Integer;
-  ResultCode: Integer;
-begin
-  Processes := ['FlClash.exe', 'FlClashCore.exe', 'FlClashHelperService.exe'];
-
-  for i := 0 to GetArrayLength(Processes)-1 do
-  begin
-    Exec('taskkill', '/f /im ' + Processes[i], '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
-end;
-
-procedure UnregisterHelperService;
-var
-  HelperPath: String;
-  ResultCode: Integer;
-begin
-  HelperPath := ExpandConstant('{app}\\FlClashHelperService.exe');
-  if FileExists(HelperPath) then
-  begin
-    Exec(HelperPath, 'uninstall', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  end;
-end;
-
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
-  UnregisterHelperService;
-  KillProcesses;
   Result := '';
-end;
-
-function InitializeUninstall(): Boolean;
-begin
-  UnregisterHelperService;
-  KillProcesses;
-  Result := True;
+  if FileExists(ExpandConstant('{app}\\FlClash.exe')) then
+    Result := 'Choose a separate directory. This installer will not overwrite original FlClash.';
 end;
 
 [Languages]

@@ -21,7 +21,7 @@ const defaultGeoXUrl = {
       'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
 };
 
-const defaultMixedPort = 7890;
+const defaultMixedPort = 17896;
 const defaultKeepAliveInterval = 30;
 
 const defaultBypassPrivateRouteAddress = [

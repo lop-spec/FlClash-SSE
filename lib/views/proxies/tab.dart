@@ -10,6 +10,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'card.dart';
+import 'sse.dart';
 import 'common.dart';
 
 typedef ProxyGroupViewKeyMap =
@@ -66,9 +67,7 @@ class ProxiesTabViewState extends ConsumerState<ProxiesTabView>
     if (group == null) {
       return;
     }
-    await ref
-        .read(proxiesActionProvider.notifier)
-        .delayTest(group.all, group.testUrl);
+    await showSseTest(context);
   }
 
   Group? get currentGroup {

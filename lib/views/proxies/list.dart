@@ -10,6 +10,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'card.dart';
+import 'sse.dart';
 import 'common.dart';
 
 typedef GroupNameProxiesMap = Map<String, List<Proxy>>;
@@ -380,9 +381,7 @@ class _ListHeaderState extends ConsumerState<ListHeader> {
     if (isLock) return;
     isLock = true;
     try {
-      await ref
-          .read(proxiesActionProvider.notifier)
-          .delayTest(widget.group.all, widget.group.testUrl);
+      await showSseTest(context);
     } finally {
       isLock = false;
     }
