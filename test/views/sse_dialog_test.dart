@@ -23,7 +23,7 @@ import '../helpers/test_app.dart';
 import '../helpers/test_profiles.dart';
 
 class _PendingCore extends Mock implements CoreHandlerInterface {
-  final reply = Completer<Map<String, dynamic>>();
+  late final Completer<Map<String, dynamic>> reply;
   int calls = 0;
   @override
   Future<T?> invokeMethod<T>({
@@ -101,6 +101,7 @@ void main() {
   tearDown(() => container.dispose());
 
   Future<void> open(WidgetTester tester) async {
+    native.reply = Completer<Map<String, dynamic>>();
     tester.view.physicalSize = const Size(1024, 768);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);

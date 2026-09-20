@@ -1,3 +1,13 @@
+# FlClash SSE — Windows 隔离版
+
+模拟 SSE tok/s 测速，保留历史有效成绩，启动自动选择仍存在的历史候选；不调用模型。应用、服务、数据独立，默认不修改系统代理或 DNS。
+
+**[SSE 版说明](README-SSE.md) · [SSE 安装包](https://github.com/lop-spec/FlClash-SSE/releases)**
+
+以下保留上游原版文档，其中的下载链接指向原版 FlClash，不是本隔离版。
+
+---
+
 <div>
 
 [**English**](README.md)

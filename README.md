@@ -1,3 +1,13 @@
+# FlClash SSE — isolated Windows edition
+
+Synthetic SSE tok/s, preserved valid history, and startup candidate selection. No model calls. Separate app, service and data identity; system proxy and automatic DNS changes default to off.
+
+**[SSE edition documentation](README-SSE.md) · [SSE Windows releases](https://github.com/lop-spec/FlClash-SSE/releases)**
+
+The original upstream documentation follows; its download links are for the original FlClash, not this SSE edition.
+
+---
+
 <div>
 
 [**简体中文**](README_zh_CN.md)

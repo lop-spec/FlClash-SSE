@@ -31,6 +31,8 @@ jobs:
           dart format lib test
       - name: Analyze
         run: flutter analyze --no-fatal-infos
+      - name: Fast SSE feature regression
+        run: flutter test test/common/sse_history_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart --reporter expanded
       - name: Full upstream Dart regression and coverage floors
         run: |
           flutter test --coverage --reporter expanded
@@ -41,7 +43,6 @@ jobs:
           name: dart-coverage
           path: coverage/lcov.info
   windows:
-    needs: test
     runs-on: windows-2022
     timeout-minutes: 45
     steps:
@@ -106,8 +107,8 @@ jobs:
         run: git checkout -- pubspec.yaml
       - name: Package isolated installer using upstream setup pipeline
         run: dart setup.dart windows --env stable -v
-      - name: Packaged core end-to-end SSE and persistence test
-        run: node tool/sse-smoke.cjs build/windows/x64/runner/Release/FlClashSSECore.exe
+      - name: Installer isolation, installed-core SSE, restart and uninstall acceptance
+        run: ./tool/verify-windows-install.ps1
       - name: Hash assets
         run: |
           $assets = @(Get-ChildItem dist -Recurse -File | Where-Object { $_.Extension -in '.exe', '.zip' })
@@ -122,7 +123,7 @@ jobs:
           retention-days: 14
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: windows
+    needs: [test, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

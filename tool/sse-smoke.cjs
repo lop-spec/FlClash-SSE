@@ -120,6 +120,7 @@ async function startCore() {
     const record = initial.history[node.key];
     assert.equal(record.latest.status, 'done', JSON.stringify(record.latest));
     assert.equal(record.lastSuccess.tokens, 161);
+    assert.equal(record.lastSuccess.flowPass, true, 'complete streams must also be usable startup candidates');
     assert.ok(record.lastSuccess.tokPerSec > 0);
     before[node.key] = record.lastSuccess.tokPerSec;
   }
