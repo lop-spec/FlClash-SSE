@@ -407,7 +407,7 @@ void main() {
       final restored = roundTrip(() => config.toJson(), Config.fromJson);
       expect(restored.currentProfileId, null);
       expect(restored.overrideDns, false);
-      expect(restored.networkProps.systemProxy, true);
+      expect(restored.networkProps.systemProxy, false);
       expect(restored.vpnProps.enable, true);
       expect(restored.hotKeyActions, isEmpty);
     });

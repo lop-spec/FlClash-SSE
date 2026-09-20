@@ -33,9 +33,7 @@ class AppPath {
   AppPath._internal() {
     appDirPath = join(dirname(Platform.resolvedExecutable));
     supportDirectory().then((value) {
-      final isolated = Directory(join(value.path, 'sse-isolated'));
-      isolated.createSync(recursive: true);
-      dataDir.complete(isolated);
+      dataDir.complete(value);
     });
     temporaryDirectory().then((value) {
       tempDir.complete(value);

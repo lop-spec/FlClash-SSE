@@ -48,14 +48,12 @@ final _toggleCases = <_ToggleCase>[
     'system proxy',
     const SystemProxyItem(),
     (c) => c.read(networkSettingProvider).systemProxy,
-    initial: true,
   ),
   _ToggleCase('ipv6', const Ipv6Item(), (c) => c.read(vpnSettingProvider).ipv6),
   _ToggleCase(
     'auto set system dns',
     const AutoSetSystemDnsItem(),
     (c) => c.read(networkSettingProvider).autoSetSystemDns,
-    initial: true,
   ),
   _ToggleCase(
     'dns hijacking',

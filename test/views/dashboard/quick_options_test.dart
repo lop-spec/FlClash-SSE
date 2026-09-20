@@ -30,7 +30,6 @@ final _cardCases = <_CardCase>[
     'system proxy',
     const SystemProxyButton(),
     (container) => container.read(networkSettingProvider).systemProxy,
-    initial: true,
   ),
   _CardCase(
     'VPN',

@@ -15,9 +15,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/dlclark/regexp2"
 	"github.com/metacubex/mihomo/adapter"
 	C "github.com/metacubex/mihomo/constant"
 	"gopkg.in/yaml.v3"
@@ -63,14 +65,26 @@ type sseCatalog struct {
 type sseRaw struct {
 	Proxies   []map[string]any `yaml:"proxies"`
 	Providers map[string]struct {
-		Type    string           `yaml:"type"`
-		URL     string           `yaml:"url"`
-		Payload []map[string]any `yaml:"payload"`
+		Type          string           `yaml:"type"`
+		URL           string           `yaml:"url"`
+		Payload       []map[string]any `yaml:"payload"`
+		Override      map[string]any   `yaml:"override"`
+		Filter        string           `yaml:"filter"`
+		ExcludeFilter string           `yaml:"exclude-filter"`
+		ExcludeType   string           `yaml:"exclude-type"`
+		DialerProxy   string           `yaml:"dialer-proxy"`
 	} `yaml:"proxy-providers"`
 	Groups []struct {
-		Name    string   `yaml:"name"`
-		Type    string   `yaml:"type"`
-		Proxies []string `yaml:"proxies"`
+		Name                string   `yaml:"name"`
+		Type                string   `yaml:"type"`
+		Proxies             []string `yaml:"proxies"`
+		Use                 []string `yaml:"use"`
+		IncludeAll          bool     `yaml:"include-all"`
+		IncludeAllProxies   bool     `yaml:"include-all-proxies"`
+		IncludeAllProviders bool     `yaml:"include-all-providers"`
+		Filter              string   `yaml:"filter"`
+		ExcludeFilter       string   `yaml:"exclude-filter"`
+		ExcludeType         string   `yaml:"exclude-type"`
 	} `yaml:"proxy-groups"`
 }
 
@@ -93,6 +107,61 @@ func sseReadYAML(path string, target any) error {
 	return yaml.NewDecoder(file).Decode(target)
 }
 
+func sseMatcher(filter, exclude, types string) (func(string, string) (bool, error), error) {
+	compile := func(text string) ([]*regexp2.Regexp, error) {
+		regs := []*regexp2.Regexp{}
+		if text == "" {
+			return regs, nil
+		}
+		for _, part := range strings.Split(text, "`") {
+			re, err := regexp2.Compile(part, regexp2.None)
+			if err != nil {
+				return nil, err
+			}
+			re.MatchTimeout = 10 * time.Millisecond
+			regs = append(regs, re)
+		}
+		return regs, nil
+	}
+	include, err := compile(filter)
+	if err != nil {
+		return nil, err
+	}
+	deny, err := compile(exclude)
+	if err != nil {
+		return nil, err
+	}
+	return func(name, kind string) (bool, error) {
+		for _, t := range strings.Split(types, "|") {
+			if t != "" && strings.EqualFold(kind, t) {
+				return false, nil
+			}
+		}
+		for _, re := range deny {
+			match, err := re.MatchString(name)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return false, nil
+			}
+		}
+		if len(include) == 0 {
+			return true, nil
+		}
+		for _, re := range include {
+			match, err := re.MatchString(name)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return true, nil
+			}
+		}
+		return false, nil
+	}, nil
+}
+
 func sseSelections(raw sseRaw, name string) map[string]string {
 	selections := map[string]string{"GLOBAL": name}
 	groups := map[string][]string{}
@@ -101,8 +170,12 @@ func sseSelections(raw sseRaw, name string) map[string]string {
 			groups[g.Name] = g.Proxies
 		}
 	}
+	memo := map[string]bool{}
 	var reach func(string, map[string]bool) bool
 	reach = func(group string, seen map[string]bool) bool {
+		if value, known := memo[group]; known {
+			return value
+		}
 		if seen[group] {
 			return false
 		}
@@ -111,9 +184,11 @@ func sseSelections(raw sseRaw, name string) map[string]string {
 		for _, child := range groups[group] {
 			if child == name || reach(child, seen) {
 				selections[group] = child
+				memo[group] = true
 				return true
 			}
 		}
+		memo[group] = false
 		return false
 	}
 	for name := range groups {
@@ -154,26 +229,121 @@ func loadSSECatalog(ctx context.Context, home string, params *SSEParams) sseCata
 			providerNames = append(providerNames, name)
 		}
 		sort.Strings(providerNames)
+		providerMembers := map[string][]string{}
 		for _, name := range providerNames {
 			provider := raw.Providers[name]
-			if provider.Type == "inline" {
-				nodes = append(nodes, provider.Payload...)
+			matches, matchErr := sseMatcher(provider.Filter, provider.ExcludeFilter, provider.ExcludeType)
+			if matchErr != nil {
+				issue(id, name, "invalid provider filter")
 				continue
 			}
-			key := "proxy-providers/" + name
-			if provider.URL != "" {
-				key = name + "@" + provider.URL
-			}
-			sum := md5.Sum([]byte(key))
-			path := filepath.Join(home, "profiles", "providers", strconv.FormatInt(id, 10), "proxies", hex.EncodeToString(sum[:]))
-			var cached sseRaw
-			if sseReadYAML(path, &cached) != nil {
-				issue(id, name, "provider cache missing; update this subscription before testing")
+			if _, ok := provider.Override["proxy-name"]; ok {
+				issue(id, name, "provider regex renaming is not supported by the isolated catalog")
 				continue
 			}
-			nodes = append(nodes, cached.Proxies...)
+			if _, ok := provider.Override["override-expr"]; ok {
+				issue(id, name, "provider expression overrides are not supported by the isolated catalog")
+				continue
+			}
+			entries := provider.Payload
+			if provider.Type != "inline" {
+				key := "proxy-providers/" + name
+				if provider.URL != "" {
+					key = name + "@" + provider.URL
+				}
+				sum := md5.Sum([]byte(key))
+				path := filepath.Join(home, "profiles", "providers", strconv.FormatInt(id, 10), "proxies", hex.EncodeToString(sum[:]))
+				var cached sseRaw
+				if sseReadYAML(path, &cached) != nil {
+					issue(id, name, "provider cache missing; update this subscription before testing")
+					continue
+				}
+				entries = cached.Proxies
+			}
+			for _, entry := range entries {
+				if ctx.Err() != nil {
+					issue(id, name, "catalog deadline reached")
+					break
+				}
+				rawName, _ := entry["name"].(string)
+				kind, _ := entry["type"].(string)
+				matched, err := matches(rawName, kind)
+				if err != nil {
+					issue(id, name, "provider filter exceeded evaluation budget")
+					break
+				}
+				if !matched {
+					continue
+				}
+				config := make(map[string]any, len(entry))
+				for k, v := range entry {
+					config[k] = v
+				}
+				if provider.DialerProxy != "" {
+					config["dialer-proxy"] = provider.DialerProxy
+				}
+				for _, key := range []string{"tfo", "mptcp", "udp", "udp-over-tcp", "up", "down", "dialer-proxy", "skip-cert-verify", "name-cert-verify", "interface-name", "routing-mark", "ip-version"} {
+					if v, ok := provider.Override[key]; ok {
+						config[key] = v
+					}
+				}
+				label, _ := config["name"].(string)
+				prefix, _ := provider.Override["additional-prefix"].(string)
+				suffix, _ := provider.Override["additional-suffix"].(string)
+				config["name"] = prefix + label + suffix
+				providerMembers[name] = append(providerMembers[name], prefix+label+suffix)
+				nodes = append(nodes, config)
+			}
+		}
+		for i := range raw.Groups {
+			group := &raw.Groups[i]
+			if group.IncludeAll || group.IncludeAllProxies {
+				for _, node := range raw.Proxies {
+					if name, ok := node["name"].(string); ok {
+						group.Proxies = append(group.Proxies, name)
+					}
+				}
+			}
+			uses := group.Use
+			if group.IncludeAll || group.IncludeAllProviders {
+				uses = providerNames
+			}
+			for _, name := range uses {
+				group.Proxies = append(group.Proxies, providerMembers[name]...)
+			}
+			matches, err := sseMatcher(group.Filter, group.ExcludeFilter, group.ExcludeType)
+			if err != nil {
+				issue(id, group.Name, "invalid group filter; startup selection excluded")
+				group.Proxies = nil
+				continue
+			}
+			kinds := map[string]string{}
+			for _, n := range nodes {
+				label, _ := n["name"].(string)
+				kinds[label], _ = n["type"].(string)
+			}
+			filtered := []string{}
+			for _, name := range group.Proxies {
+				if ctx.Err() != nil {
+					issue(id, group.Name, "catalog deadline reached")
+					break
+				}
+				matched, err := matches(name, kinds[name])
+				if err != nil {
+					issue(id, group.Name, "group filter exceeded evaluation budget")
+					break
+				}
+				if matched {
+					filtered = append(filtered, name)
+				}
+			}
+			group.Proxies = filtered
 		}
 		for _, rawNode := range nodes {
+			if ctx.Err() != nil {
+				issue(id, "", "catalog deadline reached")
+				break
+			}
 			name, _ := rawNode["name"].(string)
 			if params.Name != "" && (name != params.Name || id != params.ProfileID) {
 				continue

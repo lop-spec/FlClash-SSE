@@ -73,7 +73,7 @@ void main() {
     () async {
       linkManager.seedInitialLink([
         '--verbose',
-        'flclash://install-config?url=https://example.com/a.yaml',
+        'flclashsse://install-config?url=https://example.com/a.yaml',
       ]);
 
       expect(received, isEmpty);

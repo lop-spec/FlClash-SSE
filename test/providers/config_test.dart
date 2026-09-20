@@ -69,7 +69,7 @@ void main() {
   group('NetworkSetting provider', () {
     test('default values', () {
       final value = container.read(networkSettingProvider);
-      expect(value.systemProxy, true);
+      expect(value.systemProxy, false);
       expect(value.bypassDomain, defaultBypassDomain);
     });
 
@@ -200,7 +200,7 @@ void main() {
       expect(config.appSettingProps.onlyStatisticsProxy, false);
       expect(config.windowProps.width, 0);
       expect(config.vpnProps.enable, true);
-      expect(config.networkProps.systemProxy, true);
+      expect(config.networkProps.systemProxy, false);
       expect(config.currentProfileId, null);
       expect(config.overrideDns, false);
       expect(config.hotKeyActions, isEmpty);

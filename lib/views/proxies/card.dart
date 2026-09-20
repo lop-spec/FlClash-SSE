@@ -1,6 +1,8 @@
 import 'package:fl_clash/common/common.dart';
 import 'package:fl_clash/common/sse_history.dart';
+
 import 'sse.dart';
+
 import 'package:fl_clash/enum/enum.dart';
 import 'package:fl_clash/models/models.dart';
 import 'package:fl_clash/providers/providers.dart';
@@ -31,7 +33,9 @@ class ProxyCard extends ConsumerWidget {
     return Consumer(
       builder: (context, ref, _) {
         final profileId = ref.watch(currentProfileIdProvider);
-        final name = ref.watch(realSelectedProxyStateProvider(proxy.name)).proxyName;
+        final name = ref
+            .watch(realSelectedProxyStateProvider(proxy.name))
+            .proxyName;
         final store = SseHistory.instance;
         return ListenableBuilder(
           listenable: store,
@@ -41,15 +45,22 @@ class ProxyCard extends ConsumerWidget {
             final latest = SseHistory.object(record?['latest']);
             final speed = good?['tokPerSec'] as num?;
             return Tooltip(
-              message: '模拟 SSE tok/s，不代表模型速度。${store.running ? '本轮测速中，历史成绩保留' : latest['error'] ?? latest['status'] ?? '尚未测速'}',
+              message:
+                  '模拟 SSE tok/s，不代表模型速度。${store.running ? '本轮测速中，历史成绩保留' : latest['error'] ?? latest['status'] ?? '尚未测速'}',
               child: InkWell(
-                onTap: store.running ? null : () => showSseTest(context, name: name),
+                onTap: store.running
+                    ? null
+                    : () => showSseTest(context, name: name),
                 child: Text(
-                  speed == null ? (store.running ? '测速中…' : 'SSE 测速') : '${speed.toStringAsFixed(1)} tok/s',
+                  speed == null
+                      ? (store.running ? '测速中…' : 'SSE 测速')
+                      : '${speed.toStringAsFixed(1)} tok/s',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: context.textTheme.labelSmall?.copyWith(
-                    color: good == null ? null : Theme.of(context).colorScheme.primary,
+                    color: good == null
+                        ? null
+                        : Theme.of(context).colorScheme.primary,
                   ),
                 ),
               ),

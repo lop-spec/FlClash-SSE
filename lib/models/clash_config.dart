@@ -11,14 +11,10 @@ const defaultClashConfig = PatchClashConfig();
 const defaultTun = Tun();
 const defaultDns = Dns();
 const defaultGeoXUrl = {
-  GeoResource.MMDB:
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb',
-  GeoResource.ASN:
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb',
-  GeoResource.GEOIP:
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
-  GeoResource.GEOSITE:
-      'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
+  GeoResource.MMDB: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb',
+  GeoResource.ASN: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/GeoLite2-ASN.mmdb',
+  GeoResource.GEOIP: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.dat',
+  GeoResource.GEOSITE: 'https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat',
 };
 
 const defaultMixedPort = 17896;

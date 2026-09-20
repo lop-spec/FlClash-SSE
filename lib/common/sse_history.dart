@@ -14,9 +14,8 @@ class SseHistory extends ChangeNotifier {
   static Map<String, dynamic> object(dynamic value) =>
       value is Map ? Map<String, dynamic>.from(value) : {};
 
-  static List<Map<String, dynamic>> objects(dynamic value) => value is List
-      ? value.map(object).toList()
-      : [];
+  static List<Map<String, dynamic>> objects(dynamic value) =>
+      value is List ? value.map(object).toList() : [];
 
   static Map<String, dynamic>? success(dynamic record) {
     final value = object(object(record)['lastSuccess']);
@@ -35,9 +34,11 @@ class SseHistory extends ChangeNotifier {
     if (value['nodes'] is List) {
       final incoming = objects(value['nodes']);
       attemptedKeys = incoming.map((n) => n['key'].toString()).toSet();
-      nodes = replaceNodes ? incoming : {
-        for (final n in [...nodes, ...incoming]) n['key']: n,
-      }.values.toList();
+      nodes = replaceNodes
+          ? incoming
+          : {
+              for (final n in [...nodes, ...incoming]) n['key']: n,
+            }.values.toList();
     }
     for (final entry in object(value['history']).entries) {
       final next = object(entry.value);
@@ -58,16 +59,24 @@ class SseHistory extends ChangeNotifier {
     accept(await core.sseCatalog(profiles));
   }
 
-  Future<void> run(CoreController core, List<int> profiles, {
+  Future<void> run(
+    CoreController core,
+    List<int> profiles, {
     String? name,
     int? profileId,
   }) async {
     if (running) return;
     running = true;
     error = '';
+    attemptedKeys = {};
+    elapsedMs = 0;
     notifyListeners();
     try {
-      final result = await core.sseBatch(profiles, name: name, profileId: profileId);
+      final result = await core.sseBatch(
+        profiles,
+        name: name,
+        profileId: profileId,
+      );
       if (result.isEmpty) throw StateError('SSE core returned no result');
       accept(result, replaceNodes: name == null);
     } catch (e) {
@@ -80,8 +89,9 @@ class SseHistory extends ChangeNotifier {
 
   Map<String, dynamic>? recordFor(int? profileId, String name) {
     for (final node in nodes) {
-      if (objects(node['aliases']).any((alias) =>
-          alias['profileId'] == profileId && alias['name'] == name)) {
+      if (objects(node['aliases']).any(
+        (alias) => alias['profileId'] == profileId && alias['name'] == name,
+      )) {
         return object(history[node['key']]);
       }
     }
@@ -90,13 +100,14 @@ class SseHistory extends ChangeNotifier {
 
   Map<String, dynamic>? candidate(Iterable<int> profileIds) {
     final available = profileIds.toSet();
-    final sorted = [...nodes]..sort((a, b) {
-      final x = success(history[a['key']]);
-      final y = success(history[b['key']]);
-      return ((y?['tokPerSec'] as num?) ?? 0).compareTo(
-        (x?['tokPerSec'] as num?) ?? 0,
-      );
-    });
+    final sorted = [...nodes]
+      ..sort((a, b) {
+        final x = success(history[a['key']]);
+        final y = success(history[b['key']]);
+        return ((y?['tokPerSec'] as num?) ?? 0).compareTo(
+          (x?['tokPerSec'] as num?) ?? 0,
+        );
+      });
     for (final node in sorted) {
       final result = success(history[node['key']]);
       if (result == null || result['flowPass'] != true) continue;

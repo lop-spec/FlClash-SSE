@@ -116,22 +116,42 @@ class SetupAction extends _$SetupAction {
     if (_restoredSseCandidate) return;
     _restoredSseCandidate = true;
     try {
-      final profiles = await ref.read(profilesStreamProvider.future);
+      final profiles = ref.read(profilesProvider);
+      if (profiles.isEmpty) {
+        commonPrint.log(
+          'SSE startup: no imported subscriptions; selection retained',
+        );
+        return;
+      }
       final ids = profiles.map((p) => p.id).toList();
       final history = SseHistory.instance;
       await history.load(_core, ids);
       final winner = history.candidate(ids);
       if (winner == null) {
-        commonPrint.log('SSE startup: no available historical candidate; selection retained');
+        commonPrint.log(
+          'SSE startup: no available historical candidate; selection retained',
+        );
         return;
       }
       final profile = profiles.firstWhere((p) => p.id == winner['profileId']);
-      final selections = SseHistory.object(winner['selections']).map((key, value) => MapEntry(key, value.toString()));
-      ref.read(profilesProvider.notifier).put(profile.copyWith(selectedMap: {...profile.selectedMap, ...selections}));
+      final selections = SseHistory.object(winner['selections'])
+          .map((key, value) => MapEntry(key, value.toString()));
+      ref
+          .read(profilesProvider.notifier)
+          .put(
+            profile.copyWith(
+              selectedMap: {...profile.selectedMap, ...selections},
+            ),
+          );
       ref.read(currentProfileIdProvider.notifier).value = profile.id;
-      commonPrint.log('SSE startup: restored historical candidate ${winner['name']} from profile ${profile.id}; no probe issued');
+      commonPrint.log(
+        'SSE startup: restored historical candidate ${winner['name']} from profile ${profile.id}; no probe issued',
+      );
     } catch (error) {
-      commonPrint.log('SSE startup: history unavailable; selection retained: $error', logLevel: LogLevel.warning);
+      commonPrint.log(
+        'SSE startup: history unavailable; selection retained: $error',
+        logLevel: LogLevel.warning,
+      );
     }
   }
 
