@@ -295,7 +295,7 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                             sliver: SliverGrid(
                               gridDelegate:
                                   SliverGridDelegateWithMaxCrossAxisExtent(
-                                    maxCrossAxisExtent: 320,
+                                    maxCrossAxisExtent: 360,
                                     mainAxisExtent:
                                         148 *
                                         MediaQuery.textScalerOf(context)
@@ -347,6 +347,23 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     final good = SseHistory.success(record);
     final latest = SseHistory.object(record['latest']);
     final speed = good?['tokPerSec'] as num?;
+    String metric(String key) =>
+        (good?[key] as num?)?.toStringAsFixed(1) ?? '—';
+    final measuredAt = (record['measuredAt'] as num?)?.toInt();
+    final burst = good?['burstRatio'] as num?;
+    final burstText = burst == null
+        ? '—'
+        : '${(burst * 100).toStringAsFixed(1)}%';
+    final details = good == null
+        ? '尚无有效模拟 SSE 成绩'
+        : [
+            '模拟 tok/s，不代表模型吞吐',
+            if (measuredAt != null)
+              '测量时间：${DateTime.fromMillisecondsSinceEpoch(measuredAt).toLocal()}',
+            '首事件 ${metric('firstMs')} ms · 抖动 ${metric('jitterMs')} ms',
+            '最大间隔 ${metric('maxGapMs')} ms · 攒包比例 $burstText',
+            '流式质量：${good['flowPass'] == true ? '合格' : '不合格'}',
+          ].join('\n');
     final state = switch (latest['status']) {
       'failed' => '本轮失败',
       'timeout' => '本轮超时',
@@ -404,12 +421,15 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
               Row(
                 children: [
                   Expanded(
-                    child: Text(
-                      speed == null
-                          ? '— tok/s'
-                          : '${speed.toStringAsFixed(1)} tok/s',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: Theme.of(context).colorScheme.primary,
+                    child: Tooltip(
+                      message: details,
+                      child: Text(
+                        speed == null
+                            ? '— tok/s'
+                            : '${speed.toStringAsFixed(1)} tok/s',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
                       ),
                     ),
                   ),

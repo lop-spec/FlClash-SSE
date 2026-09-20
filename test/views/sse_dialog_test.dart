@@ -190,10 +190,17 @@ void main() {
     'background probe has no dialog, blocks duplicates and preserves failed scores',
     (tester) async {
       await open(tester);
+      // Flutter's root MaterialPageRoute already owns a barrier BELOW its page.
+      // A background probe must not add another route or barrier above it.
+      final barriers = find.byType(ModalBarrier).evaluate().length;
       await tester.tap(find.text('全部测速'));
       await tester.pump();
       expect(find.byType(Dialog), findsNothing);
-      expect(find.byType(ModalBarrier), findsNothing);
+      expect(find.byType(ModalBarrier), findsNWidgets(barriers));
+      expect(
+        Navigator.of(tester.element(find.byType(ProxiesView))).canPop(),
+        isFalse,
+      );
       expect(find.text('19.8 tok/s'), findsOneWidget);
       expect(SseHistory.instance.running, isTrue);
       final ctx = tester.element(find.byType(ProxiesView));
@@ -252,7 +259,7 @@ void main() {
             'lastSuccess': {
               'status': 'done',
               'tokens': 161,
-              'tokPerSec': 21.0,
+              'tokPerSec': 20.0,
               'flowPass': true,
             },
           },
