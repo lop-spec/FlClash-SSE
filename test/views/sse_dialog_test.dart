@@ -127,6 +127,8 @@ void main() {
         currentProfileIdProvider.overrideWithBuild((_, _) => 1),
         coreHandlerProvider.overrideWithValue(CoreController.scoped(native)),
         groupsProvider.overrideWithValue([
+          const Group(name: 'GLOBAL', type: GroupType.Selector, now: '自动选择'),
+          const Group(name: '自动选择', type: GroupType.URLTest, now: '香港 · HK 01'),
           const Group(
             name: '国外媒体',
             type: GroupType.Selector,
@@ -248,8 +250,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('主力订阅 / 新加坡 · SG 02'), findsOneWidget);
     expect(tester.takeException(), isNull);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('sse-node-1-fast'))).height,
+      72,
+    );
     await captureUi(tester, 'sse-narrow');
   });
+
+  testWidgets(
+    'current selection resolves nested automatic groups to the leaf node',
+    (tester) async {
+      container
+          .read(profilesProvider.notifier)
+          .updateProfile(1, (p) => p.copyWith(selectedMap: {}));
+      await open(tester, expand: false);
+      expect(find.text('主力订阅 / 香港 · HK 01'), findsOneWidget);
+      expect(find.text('自动选择'), findsNothing);
+      expect(find.byKey(const ValueKey('sse-node-1-slow')), findsNothing);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'all subscriptions replace rule groups and sort descending by tok/s',

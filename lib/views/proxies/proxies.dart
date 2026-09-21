@@ -123,13 +123,17 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     final profiles = ref.watch(profilesProvider);
     final currentId = ref.watch(currentProfileIdProvider);
     final currentProfile = profiles.where((p) => p.id == currentId).firstOrNull;
-    final currentNode =
+    final currentTarget =
         currentProfile?.selectedMap['GLOBAL'] ??
         ref.watch(
           selectedProxyNameProvider(
             currentProfile?.currentGroupName ?? 'GLOBAL',
           ),
         );
+    final resolved = currentTarget == null
+        ? null
+        : ref.watch(realSelectedProxyStateProvider(currentTarget)).proxyName;
+    final currentNode = resolved == '' ? null : resolved;
     final query = ref
         .watch(queryProvider(QueryTag.proxies))
         .trim()
@@ -324,10 +328,7 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                                       SseHistory.objects(entry['aliases']).any(
                                         (alias) =>
                                             alias['profileId'] == currentId &&
-                                            alias['name'] ==
-                                                group
-                                                    .profile
-                                                    .selectedMap['GLOBAL'],
+                                            alias['name'] == currentNode,
                                       );
                                   return _nodeCard(
                                     context,
