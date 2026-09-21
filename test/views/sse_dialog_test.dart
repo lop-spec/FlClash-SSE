@@ -140,7 +140,22 @@ void main() {
   });
   tearDown(() => container.dispose());
 
-  Future<void> open(WidgetTester tester) async {
+  Future<void> captureUi(WidgetTester tester, String name) async {
+    if (!capture) return;
+    await tester.runAsync(() async {
+      final image =
+          await (imageKey.currentContext!.findRenderObject()!
+                  as RenderRepaintBoundary)
+              .toImage();
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      Directory('test-output').createSync(recursive: true);
+      File('test-output/$name.png')
+          .writeAsBytesSync(bytes!.buffer.asUint8List());
+      image.dispose();
+    });
+  }
+
+  Future<void> open(WidgetTester tester, {bool expand = true}) async {
     native.reply = Completer<Map<String, dynamic>>();
     tester.view.physicalSize = const Size(1100, 850);
     tester.view.devicePixelRatio = 1;
@@ -167,7 +182,74 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    if (expand) {
+      for (final id in [1, 2]) {
+        await tester.tap(find.byKey(ValueKey('sse-group-$id')));
+        await tester.pumpAndSettle();
+      }
+    }
   }
+
+  testWidgets(
+    'all groups start collapsed; current subscription and node stay visible',
+    (tester) async {
+      await open(tester, expand: false);
+      expect(find.byKey(const ValueKey('sse-node-1-fast')), findsNothing);
+      expect(find.byKey(const ValueKey('sse-node-2-slow')), findsNothing);
+      expect(find.text('主力订阅 / 新加坡 · SG 02'), findsOneWidget);
+      await captureUi(tester, 'sse-collapsed');
+      await tester.tap(find.byKey(const ValueKey('sse-group-1')));
+      await tester.pumpAndSettle();
+      final node = find.byKey(const ValueKey('sse-node-1-fast'));
+      expect(node, findsOneWidget);
+      expect(tester.getSize(node).height, 36);
+      final icons = tester.widgetList<Icon>(
+        find.descendant(of: node, matching: find.byType(Icon)),
+      );
+      expect(icons.every((icon) => icon.size! <= 15), isTrue);
+      expect(find.byKey(const ValueKey('sse-node-2-slow')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('sse-group-1')));
+      await tester.pumpAndSettle();
+      expect(node, findsNothing);
+      expect(find.text('主力订阅 / 新加坡 · SG 02'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'search reveals matches temporarily and clearing restores folds',
+    (tester) async {
+      await open(tester, expand: false);
+      container.read(queryProvider(QueryTag.proxies).notifier).value = 'HK';
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('sse-node-2-slow')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('sse-group-2')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('sse-node-2-slow')), findsNothing);
+      container.read(queryProvider(QueryTag.proxies).notifier).value = '';
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('sse-node-1-slow')), findsNothing);
+      expect(find.byKey(const ValueKey('sse-node-2-slow')), findsNothing);
+      expect(find.text('主力订阅 / 新加坡 · SG 02'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('compact layout supports narrow windows and large text', (
+    tester,
+  ) async {
+    await open(tester);
+    tester.view.physicalSize = const Size(360, 800);
+    container
+        .read(viewSizeProvider.notifier)
+        .update((_) => const Size(360, 800));
+    tester.platformDispatcher.textScaleFactorTestValue = 2;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await tester.pumpAndSettle();
+    expect(find.text('主力订阅 / 新加坡 · SG 02'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await captureUi(tester, 'sse-narrow');
+  });
 
   testWidgets(
     'all subscriptions replace rule groups and sort descending by tok/s',
@@ -239,19 +321,7 @@ void main() {
       expect(find.textContaining('本轮成功 0/3'), findsOneWidget);
       expect(find.textContaining('项未覆盖'), findsOneWidget);
       expect(tester.takeException(), isNull);
-      if (capture) {
-        await tester.runAsync(() async {
-          final image =
-              await (imageKey.currentContext!.findRenderObject()!
-                      as RenderRepaintBoundary)
-                  .toImage();
-          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-          Directory('test-output').createSync(recursive: true);
-          File('test-output/sse-subscriptions.png')
-              .writeAsBytesSync(bytes!.buffer.asUint8List());
-          image.dispose();
-        });
-      }
+      await captureUi(tester, 'sse-subscriptions');
     },
   );
 
@@ -298,6 +368,11 @@ void main() {
       });
       expect(SseHistory.instance.running, isTrue);
       expect(native.calls, 1);
+      expect(find.text('备用订阅 / 香港 · HK 01'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('sse-group-2')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('sse-node-2-slow')), findsNothing);
+      expect(find.text('备用订阅 / 香港 · HK 01'), findsOneWidget);
       native.reply.complete(fixture());
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);

@@ -28,6 +28,16 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
   int _loadRevision = 0;
   String _error = '';
   String? _selecting;
+  final _expanded = <int>{};
+  final _searchCollapsed = <int>{};
+
+  bool _isExpanded(int id, String query) =>
+      query.isEmpty ? _expanded.contains(id) : !_searchCollapsed.contains(id);
+
+  void _toggle(int id, String query) => setState(() {
+    final set = query.isEmpty ? _expanded : _searchCollapsed;
+    if (!set.remove(id)) set.add(id);
+  });
 
   @override
   void initState() {
@@ -40,6 +50,9 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
       ),
       (_, _) => unawaited(_refresh()),
     );
+    ref.listenManual(queryProvider(QueryTag.proxies), (_, _) {
+      setState(_searchCollapsed.clear);
+    });
     Future.microtask(_refresh);
   }
 
@@ -109,6 +122,14 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
   Widget build(BuildContext context) {
     final profiles = ref.watch(profilesProvider);
     final currentId = ref.watch(currentProfileIdProvider);
+    final currentProfile = profiles.where((p) => p.id == currentId).firstOrNull;
+    final currentNode =
+        currentProfile?.selectedMap['GLOBAL'] ??
+        ref.watch(
+          selectedProxyNameProvider(
+            currentProfile?.currentGroupName ?? 'GLOBAL',
+          ),
+        );
     final query = ref
         .watch(queryProvider(QueryTag.proxies))
         .trim()
@@ -167,7 +188,11 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(24, 12, 24, 12),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: _currentSelection(context, currentProfile, currentNode),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 10, 24, 8),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -251,36 +276,16 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                       for (final group in groups)
                         if (query.isEmpty || group.nodes.isNotEmpty) ...[
                           SliverToBoxAdapter(
-                            child: Padding(
-                              padding: const EdgeInsets.fromLTRB(
-                                24,
-                                16,
-                                24,
-                                12,
-                              ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      group.profile.label.isEmpty
-                                          ? '订阅 ${group.profile.id}'
-                                          : group.profile.label,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium,
-                                    ),
-                                  ),
-                                  Text(
-                                    '${group.nodes.length} 个节点',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall,
-                                  ),
-                                ],
-                              ),
+                            child: _groupHeader(
+                              context,
+                              group.profile,
+                              group.nodes.length,
+                              query,
+                              currentId == group.profile.id,
                             ),
                           ),
-                          if (group.nodes.isEmpty)
+                          if (_isExpanded(group.profile.id, query) &&
+                              group.nodes.isEmpty)
                             const SliverToBoxAdapter(
                               child: Padding(
                                 padding: EdgeInsets.symmetric(
@@ -290,49 +295,165 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                                 child: Text('暂无缓存节点，请更新此订阅后刷新。'),
                               ),
                             ),
-                          SliverPadding(
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            sliver: SliverGrid(
-                              gridDelegate:
-                                  SliverGridDelegateWithMaxCrossAxisExtent(
-                                    maxCrossAxisExtent: 360,
-                                    mainAxisExtent:
-                                        148 *
-                                        MediaQuery.textScalerOf(context)
-                                            .scale(1),
-                                    crossAxisSpacing: 12,
-                                    mainAxisSpacing: 12,
-                                  ),
-                              delegate: SliverChildBuilderDelegate((
-                                context,
-                                index,
-                              ) {
-                                final entry = group.nodes[index];
-                                final selected =
-                                    currentId == group.profile.id &&
-                                    SseHistory.objects(entry['aliases']).any(
-                                      (alias) =>
-                                          alias['profileId'] == currentId &&
-                                          alias['name'] ==
-                                              group
-                                                  .profile
-                                                  .selectedMap['GLOBAL'],
-                                    );
-                                return _nodeCard(
+                          if (_isExpanded(group.profile.id, query))
+                            SliverPadding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                              sliver: SliverGrid(
+                                gridDelegate:
+                                    SliverGridDelegateWithMaxCrossAxisExtent(
+                                      maxCrossAxisExtent:
+                                          340 *
+                                          MediaQuery.textScalerOf(context)
+                                              .scale(1)
+                                              .clamp(1, 3),
+                                      mainAxisExtent:
+                                          36 *
+                                          MediaQuery.textScalerOf(context)
+                                              .scale(1)
+                                              .clamp(1, double.infinity),
+                                      crossAxisSpacing: 6,
+                                      mainAxisSpacing: 6,
+                                    ),
+                                delegate: SliverChildBuilderDelegate((
                                   context,
-                                  group.profile,
-                                  entry,
-                                  selected,
-                                );
-                              }, childCount: group.nodes.length),
+                                  index,
+                                ) {
+                                  final entry = group.nodes[index];
+                                  final selected =
+                                      currentId == group.profile.id &&
+                                      SseHistory.objects(entry['aliases']).any(
+                                        (alias) =>
+                                            alias['profileId'] == currentId &&
+                                            alias['name'] ==
+                                                group
+                                                    .profile
+                                                    .selectedMap['GLOBAL'],
+                                      );
+                                  return _nodeCard(
+                                    context,
+                                    group.profile,
+                                    entry,
+                                    selected,
+                                  );
+                                }, childCount: group.nodes.length),
+                              ),
                             ),
-                          ),
                         ],
                       const SliverToBoxAdapter(child: SizedBox(height: 100)),
                     ],
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  String _label(Profile profile) =>
+      profile.label.isEmpty ? '订阅 ${profile.id}' : profile.label;
+
+  Widget _currentSelection(
+    BuildContext context,
+    Profile? profile,
+    String? node,
+  ) {
+    final colors = Theme.of(context).colorScheme;
+    final title = profile == null
+        ? '尚未选择订阅'
+        : '${_label(profile)} / ${node ?? '未选择节点'}';
+    return Container(
+      key: const ValueKey('sse-current-selection'),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.primaryContainer.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: colors.primary.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.near_me_outlined, size: 18, color: colors.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '当前选择 · 订阅 / 节点',
+                  style: Theme.of(context).textTheme.labelSmall
+                      ?.copyWith(color: colors.primary),
+                ),
+                const SizedBox(height: 2),
+                Tooltip(
+                  message: title,
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _groupHeader(
+    BuildContext context,
+    Profile profile,
+    int count,
+    String query,
+    bool current,
+  ) {
+    final expanded = _isExpanded(profile.id, query);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+      child: Semantics(
+        expanded: expanded,
+        child: Material(
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            key: ValueKey('sse-group-${profile.id}'),
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => _toggle(profile.id, query),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(
+                    expanded ? Icons.expand_more : Icons.chevron_right,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _label(profile),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                  if (current)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6, right: 10),
+                      child: Text(
+                        '当前',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  Text(
+                    '$count 个节点',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -376,87 +497,89 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
             ? '流式质量不合格'
             : '历史有效成绩',
     };
+    final colors = Theme.of(context).colorScheme;
+    final failed =
+        [
+          'failed',
+          'timeout',
+          'endpoint',
+          'unmeasured',
+        ].contains(latest['status']) ||
+        good?['flowPass'] == false;
     return Card.outlined(
       key: ValueKey('sse-node-${profile.id}-${entry['key']}'),
       margin: EdgeInsets.zero,
       clipBehavior: Clip.antiAlias,
       shape: RoundedSuperellipseBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(6),
+        side: BorderSide(
+          color: selected
+              ? colors.primary
+              : colors.outlineVariant.withValues(alpha: 0.5),
+        ),
       ),
-      color: selected ? Theme.of(context).colorScheme.secondaryContainer : null,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: _selecting == null ? () => _select(entry) : null,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '${entry['name']}',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                    ),
-                    if (selected)
-                      const Padding(
-                        padding: EdgeInsets.only(left: 8),
-                        child: Icon(Icons.check_circle, size: 20),
-                      ),
-                  ],
+      color: selected ? colors.secondaryContainer : null,
+      child: Tooltip(
+        message:
+            '${entry['name']}\n$state${latest['error'] == null ? '' : ': ${latest['error']}'}\n$details',
+        child: InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: _selecting == null ? () => _select(entry) : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                Icon(
+                  selected ? Icons.check_circle : Icons.language,
+                  size: 15,
+                  color: selected ? colors.primary : colors.onSurfaceVariant,
                 ),
-              ),
-              Tooltip(
-                message: '${latest['error'] ?? state}',
-                child: Text(
-                  state,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '${entry['name']}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(fontSize: 12.5),
+                  ),
                 ),
-              ),
-              const SizedBox(height: 4),
-              Row(
-                children: [
-                  Expanded(
-                    child: Tooltip(
-                      message: details,
-                      child: Text(
-                        speed == null
-                            ? '— tok/s'
-                            : '${speed.toStringAsFixed(1)} tok/s',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
+                const SizedBox(width: 6),
+                if (failed)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: Icon(
+                      Icons.error_outline,
+                      size: 12,
+                      color: colors.error,
                     ),
                   ),
-                  SizedBox(
-                    height: 32,
-                    width: 32,
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      tooltip: '重测此节点',
-                      onPressed: store.running
-                          ? null
-                          : () => runSseTest(
-                              context,
-                              name: '${entry['name']}',
-                              profileId: profile.id,
-                            ),
-                      icon: const Icon(Icons.speed, size: 18),
-                    ),
+                Text(
+                  speed == null
+                      ? '— tok/s'
+                      : '${speed.toStringAsFixed(1)} tok/s',
+                  style: Theme.of(context).textTheme.labelSmall
+                      ?.copyWith(color: colors.primary),
+                ),
+                const SizedBox(width: 4),
+                SizedBox(
+                  height: 28,
+                  width: 28,
+                  child: IconButton(
+                    padding: EdgeInsets.zero,
+                    tooltip: '重测此节点',
+                    onPressed: store.running
+                        ? null
+                        : () => runSseTest(
+                            context,
+                            name: '${entry['name']}',
+                            profileId: profile.id,
+                          ),
+                    icon: const Icon(Icons.speed, size: 15),
                   ),
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
