@@ -628,13 +628,24 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                       color: colors.error,
                     ),
                   ),
-                Text(
-                  [
-                    if (score > 0) '$score 分',
-                    latency == null ? '— ms' : '${latency.round()} ms',
-                  ].join(' · '),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: score > 0 ? colors.primary : colors.onSurfaceVariant,
+                // Scores accumulate without bound, so the label is capped to
+                // keep the name and retest button on one line at large text.
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: 120 * MediaQuery.textScalerOf(context).scale(1),
+                  ),
+                  child: Text(
+                    [
+                      if (score > 0) '$score分',
+                      latency == null ? '—' : '${latency.round()}ms',
+                    ].join(' · '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: score > 0
+                          ? colors.primary
+                          : colors.onSurfaceVariant,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 4),

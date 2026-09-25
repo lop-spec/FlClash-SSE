@@ -318,7 +318,7 @@ void main() {
         Navigator.of(tester.element(find.byType(ProxiesView))).canPop(),
         isFalse,
       );
-      expect(find.text('4 分 · 180 ms'), findsOneWidget);
+      expect(find.text('4分 · 180ms'), findsOneWidget);
       expect(SseHistory.instance.running, isTrue);
       final ctx = tester.element(find.byType(ProxiesView));
       unawaited(runSseTest(ctx));
@@ -343,7 +343,7 @@ void main() {
         ],
       });
       await tester.pumpAndSettle();
-      expect(find.text('4 分 · — ms'), findsOneWidget);
+      expect(find.text('4分 · —'), findsOneWidget);
       expect(find.textContaining('本轮初筛成功 0/3'), findsOneWidget);
       expect(find.textContaining('项未覆盖'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -415,7 +415,7 @@ void main() {
     native.reply.completeError(StateError('test connection refused'));
     await tester.pumpAndSettle();
     expect(find.textContaining('上次成绩保留'), findsOneWidget);
-    expect(find.text('4 分 · 180 ms'), findsOneWidget);
+    expect(find.text('4分 · 180ms'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
