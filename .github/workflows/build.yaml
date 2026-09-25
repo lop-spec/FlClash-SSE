@@ -32,7 +32,8 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Fast SSE feature regression
-        run: flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart --reporter expanded
+        run: |
+          flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart --reporter expanded --file-reporter json:sse-results.json || { node tool/ci-test-annotations.cjs sse-results.json; exit 1; }
       - name: Full upstream Dart regression and coverage floors
         run: |
           flutter test --coverage --reporter expanded
@@ -94,7 +95,9 @@ jobs:
       - name: Windows SSE and native lifecycle regression
         env:
           SSE_CAPTURE_UI: 'true'
-        run: flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart test/core/desktop --reporter expanded
+        run: |
+          flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart test/core/desktop --reporter expanded --file-reporter json:sse-results.json
+          if ($LASTEXITCODE -ne 0) { node tool/ci-test-annotations.cjs sse-results.json; exit 1 }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
