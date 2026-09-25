@@ -140,7 +140,7 @@ class SetupAction extends _$SetupAction {
         'codex-responses-proxy.log',
       ),
       port: () => ref.read(patchClashConfigProvider).mixedPort,
-      onFailure: _failover,
+      onFailure: failoverSse,
       onSuppressed: (failure) => commonPrint.log(
         'SSE failover: $failure within cooldown; selection kept',
       ),
@@ -150,7 +150,7 @@ class SetupAction extends _$SetupAction {
     );
   }
 
-  Future<void> _failover(SseFailure failure) async {
+  Future<void> failoverSse(SseFailure failure) async {
     final history = SseHistory.instance;
     final profile = ref.read(currentProfileProvider);
     final current = history.currentKey(

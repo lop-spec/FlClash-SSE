@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:fl_clash/common/sse_failover.dart';
 import 'package:fl_clash/common/sse_history.dart';
 import 'package:fl_clash/core/controller.dart';
 import 'package:fl_clash/core/desktop/model.dart';
@@ -134,6 +135,8 @@ void main() {
     SseHistory.instance.history = {};
     SseHistory.instance.attemptedKeys = {};
     SseHistory.instance.tournament = {};
+    SseHistory.instance.failover = {};
+    SseHistory.instance.activeKey = null;
     native = _Core()..response = catalog();
     core = CoreController.scoped(native);
     container = ProviderContainer(
@@ -323,4 +326,19 @@ void main() {
       store.dispose();
     },
   );
+
+  test('a real connection failure switches to the next ranked node', () async {
+    final store = SseHistory.instance..accept(catalog(), measurement: false);
+    final setup = container.read(setupActionProvider.notifier);
+    await setup.failoverSse(const SseFailure('Claude', 'ECONNRESET'));
+    expect(container.read(currentProfileIdProvider), 2);
+    expect(container.read(profilesProvider).last.selectedMap['Select'], 'winner');
+    expect(store.activeKey, 'good');
+    expect(store.failover, containsPair('name', 'winner'));
+    expect(store.failover, containsPair('source', 'Claude'));
+    store.failover = {};
+    await setup.failoverSse(const SseFailure('ChatGPT', 'ETIMEDOUT'));
+    expect(store.failover, isEmpty, reason: 'the only ranked node is already selected');
+    expect(native.calls, isEmpty);
+  });
 }

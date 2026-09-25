@@ -117,6 +117,7 @@ void main() {
     store.attemptedKeys = {};
     store.tournament = {};
     store.failover = {};
+    store.activeKey = null;
     store.accept(fixture(), measurement: false);
     native = _PendingCore();
     container = ProviderContainer(
@@ -439,4 +440,75 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets('tournament progress, result and automatic switches are shown', (
+    tester,
+  ) async {
+    await open(tester, expand: false);
+    final store = SseHistory.instance;
+    const colos = [
+      {'location': 'NRT', 'latencyMs': 128, 'nodes': 14},
+      {'location': 'SIN', 'latencyMs': 196, 'nodes': 18},
+    ];
+    store.running = true;
+    store.accept({
+      'tournament': {
+        'running': true,
+        'startedAt': DateTime.now().millisecondsSinceEpoch,
+        'limitMs': 900000,
+        'colos': colos,
+        'entrants': [
+          {'key': 'fast', 'name': '新加坡 · SG 02', 'alive': true},
+          {'key': 'slow', 'name': '香港 · HK 01', 'alive': false, 'idleMs': 47000},
+        ],
+      },
+    }, measurement: false);
+    await tester.pump();
+    expect(
+      find.textContaining('淘汰赛：NRT 128ms、SIN 196ms 共 2 个节点，剩 1 个'),
+      findsOneWidget,
+    );
+    store.running = false;
+    store.accept({
+      'history': {
+        'fast': {
+          'score': 8,
+          'latest': {...done(180), 'place': 1, 'idleMs': 169000, 'survived': true},
+        },
+        'slow': {
+          'score': 1,
+          'latest': {'status': 'blocked', 'error': 'Claude: HTTP 403'},
+        },
+      },
+      'tournament': {
+        'running': false,
+        'startedAt': 1790000000000,
+        'finishedAt': 1790000169000,
+        'colos': colos,
+        'podium': ['fast', 'slow'],
+        'entrants': [
+          {'key': 'fast', 'name': '新加坡 · SG 02', 'alive': true, 'idleMs': 169000},
+          {'key': 'slow', 'name': '香港 · HK 01', 'alive': false, 'idleMs': 47000},
+        ],
+      },
+    }, measurement: false);
+    store.recordFailover({
+      'at': 1790000200000,
+      'source': 'Claude',
+      'detail': 'ECONNRESET',
+      'name': '香港 · HK 01',
+    });
+    await tester.pumpAndSettle();
+    expect(find.textContaining('冠军 新加坡 · SG 02（空闲存活 169 秒）'), findsOneWidget);
+    expect(find.textContaining('Claude 连接失败（ECONNRESET）→ 香港 · HK 01'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('sse-group-1')));
+    await tester.pumpAndSettle();
+    expect(find.text('8分 · 180ms'), findsOneWidget);
+    store.accept({
+      'tournament': {'running': false, 'error': 'no reachable node in the two fastest colos'},
+    }, measurement: false);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('最近一场淘汰赛未进行'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
