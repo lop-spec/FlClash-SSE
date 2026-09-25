@@ -1,23 +1,27 @@
 # FlClash SSE（Windows 隔离版）
 
-在 FlClash 0.8.98 上增加模拟 SSE 链路测速，不调用模型，也不下载大文件测速。
+在 FlClash 0.8.98 上为 ChatGPT 和 Claude 给节点打分：不调用模型，不下载大文件，只看节点能不能用、离源站多近、空闲连接能撑多久。
 
 ## 使用
 
-安装到独立目录，在本版导入、更新订阅，再点击代理页的「全部测速」。测速始终在后台运行，不弹窗口、不锁住页面，离开页面也继续执行。整批测试覆盖本版所有已缓存订阅，按连接配置去重，保留各订阅的节点名称。节点行右侧可单独重测。
+安装到独立目录，在本版导入、更新订阅，再点击代理页的「全部测速」。测速始终在后台运行，不弹窗口、不锁住页面，离开页面也继续执行。整批覆盖本版所有已缓存订阅，按连接配置去重，保留各订阅的节点名称。节点行右侧可单独重测（只做初筛，不参加淘汰赛、不加分）。
 
-代理页顶部常驻显示当前选择的订阅和节点；所有订阅分组默认折叠，点击组头展开或收起。展开后采用 Smart Proxy 历史版风格的紧凑单行小格（默认高 36px、图标 15px、间距 6px），完整名称、历史质量指标和最新失败原因可悬停查看。搜索临时展开匹配分组，清空后恢复原来的展开状态。
+代理页顶部常驻显示当前选择的订阅和节点；所有订阅分组默认折叠，点击组头展开或收起。展开后是紧凑单行小格，悬停可看得分、延迟、出口机房、淘汰赛名次和最新失败原因。各订阅内按累计得分降序，同分按最近一次延迟升序，未测速节点置后。
 
-代理页汇总所有订阅，按订阅分区显示，不再展示「节点选择、国外媒体」等规则组；各订阅内默认按历史有效模拟 tok/s 降序排列，未测速节点置后。后台成绩返回后自动重排；搜索同时匹配订阅名和节点名。规则组只从界面隐藏，不删除实际路由规则。点击其他订阅的节点会切换到对应订阅，并保留该节点的选择路径。
+## 测速流程
 
-- 固定发送 161 个 256 字节事件，间隔 50 ms，持续 8 秒。
-- **模拟 tok/s = 161 ÷ 从请求发起到完整结束的秒数**，包含握手与首段等待；不是模型 tokenizer 吞吐，也不是 Mbps 换算。
-- 同时记录首事件延迟、抖动、额外停顿及攒包比例，必须收到完整序号和结束事件才产生有效成绩。
-- 512 路并发，1 ms 启动间隔；内核整批预算 19 秒，界面请求截止 20 秒。不可达、源故障、超时及排队未开始分别显示，不能把它们当作全部测完成功。节点很多或握手很慢时，20 秒内不一定全有有效成绩。
+1. **初筛**（约 15–30 秒）：每个节点同时连 `chatgpt.com` 和 `api.anthropic.com`，只认未登录的 401；403（地区封锁或 Cloudflare 拦截）标为拒绝，两边任一不通都不参加后续比赛。ChatGPT 连接上顺序连发 5 次请求，取最小值为节点延迟，出口机房取自 `Cf-Ray`。32 路并发，30 秒截止。
+2. **机房统计**：按出口机房汇总，机房延迟取其节点延迟的中位数，选出最快的两个机房。
+3. **淘汰赛**（通常 1–3 分钟，最长 15 分钟）：两个机房的所有节点保留初筛那条 ChatGPT 连接，统一发一次请求后进入空闲。中继空闲超时会用 FIN/RST 关闭连接，被动记录谁先断，不发任何会重置空闲计时的数据。先断的先淘汰，直到剩最后一个。5 秒内先后断掉视为平手，按延迟排先后；最后一名幸存者要比上一个断线者多撑 5 秒才算独胜。
+4. **计分**：前四名依次加 4、3、2、1 分，按节点配置指纹累计写入 `node-score-v1.json`。配置指纹改变视为新节点，不继承旧分。最近一次失败会覆盖延迟显示，但不扣分。
 
-**新的有效成绩到来前，旧 tok/s 始终保留**。测试中及失败状态与历史成绩分开，历史记录原子写入 `sse-history-v1.json`。配置指纹改变后视为新节点，不把同名旧节点的成绩套给新连接。
+## 自动切换
 
-每次启动只从仍存在、历史流式质量达标的节点中选择最高模拟 tok/s 候选，恢复对应订阅和可手动选择的组，不为选节点重新测速；无候选则保持原选择。自动策略组仍按原规则工作。
+- **重启**：从仍存在、未被拒绝的节点中切到得分最高者，恢复对应订阅和选择路径，不为选节点重新测速；没有得分则保持原选择。
+- **实时故障切换**：监控真实流量的日志，出现连接层失败就切到排名下一位（到末尾回到第一），60 秒冷却，启动后第一分钟不切。
+  - Claude：`%USERPROFILE%\.claude\projects` 下会话记录里的 `api_error`，只认 ECONNRESET、ETIMEDOUT 等连接错误和请求超时；ConnectionRefused（本机代理端口没开）和 HTTP 状态错误（429、529 等）不算。
+  - ChatGPT：pi-web GPT 桥日志 `%LOCALAPPDATA%\pi-web\portable\data\codex-responses-proxy.log` 里经本版代理端口的「连接层失败」。桥要把出口指向本版的混合端口才有意义。
+- 每次切换和因冷却未切换都写入应用日志。
 
 ## 隔离
 
@@ -31,16 +35,16 @@ HTTP/file provider 使用本版缓存，支持常规筛选、前后缀及连接�
 
 ## 开发验证
 
-发布安装包只通过 `.github/workflows/build.yaml` 云端生成。源码继承 FlClash GPL-3.0；帧与节奏协议参考 Stream Quality，MIT 许可保留于 `sse-source/STREAM-QUALITY-LICENSE`。
+发布安装包只通过 `.github/workflows/build.yaml` 云端生成。源码继承 FlClash GPL-3.0。
 
 ```sh
 cd core
 go test -count=1 -v . ./ssebench
 go vet . ./ssebench
-go run ./cmd/ssecheck -count 8
+# 用已安装版的订阅副本跑完整初筛和淘汰赛（不写真实数据）
+FLCLASH_SSE_LIVE_HOME=<应用数据目录> FLCLASH_SSE_LIVE_OUT=<结果.json> go test -count=1 -timeout 20m -run TestLiveBatchAndTournament -v .
 cd ..
-node --test sse-source/worker.test.mjs
-flutter test test/common/sse_history_test.dart
+flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart
 ```
 
-`Test1024RealStreamsWithin20Seconds` 使用 1024 条真实本地 HTTP SSE 连接，而非空任务计时。`ssecheck` 只请求独立模拟源。服务端源码为 `sse-source/worker.mjs`，协议标识为 `fc-sse-v1-256b-50ms-8s`；与旧 20 秒 Stream Quality 源不混用。
+`TestFullScreenOf256NodesWithinBudget` 用 256 条真实本地 TLS HTTP/2 连接验证初筛预算；`tool/sse-smoke.cjs` 对安装后的内核跑一遍初筛、限时淘汰赛、重启恢复和失败保分。

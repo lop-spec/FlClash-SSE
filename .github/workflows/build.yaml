@@ -1,7 +1,7 @@
 name: build
 on:
   push:
-    branches: [sse-isolated]
+    branches: [sse-isolated, 'feat/**']
     tags: ['v*-sse.*']
   workflow_dispatch:
 permissions:
@@ -32,7 +32,7 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos
       - name: Fast SSE feature regression
-        run: flutter test test/common/sse_history_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart --reporter expanded
+        run: flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart --reporter expanded
       - name: Full upstream Dart regression and coverage floors
         run: |
           flutter test --coverage --reporter expanded
@@ -63,9 +63,7 @@ jobs:
           workspaces: |
             services/helper
             plugins/rust_api/rust
-      - name: Synthetic source protocol and cancellation tests
-        run: node --test sse-source/worker.test.mjs
-      - name: Go regression and 1024-node 20-second acceptance
+      - name: Go regression, 256-node screening budget and tournament rules
         working-directory: core
         env:
           CGO_ENABLED: 0
@@ -96,7 +94,7 @@ jobs:
       - name: Windows SSE and native lifecycle regression
         env:
           SSE_CAPTURE_UI: 'true'
-        run: flutter test test/common/sse_history_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart test/core/desktop --reporter expanded
+        run: flutter test test/common/sse_history_test.dart test/common/sse_failover_test.dart test/providers/sse_startup_test.dart test/views/sse_dialog_test.dart test/core/desktop --reporter expanded
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -144,5 +142,5 @@ jobs:
         with:
           prerelease: true
           name: FlClash SSE isolated Windows
-          body: 'Isolated Windows installer. Synthetic SSE tok/s only; 8-second workload, 20-second batch deadline, persistent last valid scores and startup candidate selection. Separate app data and protocol registration; never overwrites original FlClash.'
+          body: 'Isolated Windows installer. ChatGPT/Claude 401 gates, warm ChatGPT latency by exit colo, idle-connection tournament with persistent 4/3/2/1 scores, top-score startup restore and failover on real Claude/GPT-bridge connection failures. No model calls. Separate app data and protocol registration; never overwrites original FlClash.'
           files: dist/*

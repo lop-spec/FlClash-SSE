@@ -66,19 +66,21 @@ Map<String, dynamic> fixture() => {
       },
   ],
   'history': {
-    for (final (key, rate) in [('slow', 17.3), ('fast', 19.8)])
+    for (final (key, score, latency) in [('slow', 1, 250), ('fast', 4, 180)])
       key: {
         'measuredAt': 1790000000000,
-        'lastSuccess': {
-          'status': 'done',
-          'tokens': 161,
-          'tokPerSec': rate,
-          'flowPass': true,
-        },
-        'latest': {'status': 'done'},
+        'score': score,
+        'latest': done(latency),
       },
   },
   'elapsedMs': 8473,
+};
+
+Map<String, dynamic> done(num latency) => {
+  'status': 'done',
+  'samples': SseHistory.samples,
+  'latencyMs': latency,
+  'location': 'NRT',
 };
 
 void main() {
@@ -113,6 +115,8 @@ void main() {
     store.nodes = [];
     store.history = {};
     store.attemptedKeys = {};
+    store.tournament = {};
+    store.failover = {};
     store.accept(fixture(), measurement: false);
     native = _PendingCore();
     container = ProviderContainer(
@@ -272,7 +276,7 @@ void main() {
   );
 
   testWidgets(
-    'all subscriptions replace rule groups and sort descending by tok/s',
+    'all subscriptions replace rule groups and sort by tournament score',
     (tester) async {
       // Persisted upstream list/name preferences must not restore the old rule UI.
       container
@@ -300,7 +304,7 @@ void main() {
   );
 
   testWidgets(
-    'background probe has no dialog, blocks duplicates and preserves failed scores',
+    'background probe has no dialog, blocks duplicates and keeps scores through failures',
     (tester) async {
       await open(tester);
       // Flutter's root MaterialPageRoute already owns a barrier BELOW its page.
@@ -314,7 +318,7 @@ void main() {
         Navigator.of(tester.element(find.byType(ProxiesView))).canPop(),
         isFalse,
       );
-      expect(find.text('19.8 tok/s'), findsOneWidget);
+      expect(find.text('4 分 · 180 ms'), findsOneWidget);
       expect(SseHistory.instance.running, isTrue);
       final ctx = tester.element(find.byType(ProxiesView));
       unawaited(runSseTest(ctx));
@@ -323,9 +327,11 @@ void main() {
         ...fixture(),
         'history': {
           'fast': {
+            'score': 4,
             'latest': {'status': 'timeout', 'error': '本轮测试超时'},
           },
           'slow': {
+            'score': 1,
             'latest': {'status': 'failed'},
           },
           'new': {
@@ -337,8 +343,8 @@ void main() {
         ],
       });
       await tester.pumpAndSettle();
-      expect(find.text('19.8 tok/s'), findsOneWidget);
-      expect(find.textContaining('本轮成功 0/3'), findsOneWidget);
+      expect(find.text('4 分 · — ms'), findsOneWidget);
+      expect(find.textContaining('本轮初筛成功 0/3'), findsOneWidget);
       expect(find.textContaining('项未覆盖'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await captureUi(tester, 'sse-subscriptions');
@@ -356,14 +362,7 @@ void main() {
       native.reply.complete({
         ...fixture(),
         'history': {
-          'slow': {
-            'lastSuccess': {
-              'status': 'done',
-              'tokens': 161,
-              'tokPerSec': 20.0,
-              'flowPass': true,
-            },
-          },
+          'slow': {'score': 9, 'latest': done(300)},
         },
       });
       await tester.pump();
@@ -415,8 +414,8 @@ void main() {
     expect(container.read(currentProfileIdProvider), 1);
     native.reply.completeError(StateError('test connection refused'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('历史成绩保留'), findsOneWidget);
-    expect(find.text('19.8 tok/s'), findsOneWidget);
+    expect(find.textContaining('上次成绩保留'), findsOneWidget);
+    expect(find.text('4 分 · 180 ms'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

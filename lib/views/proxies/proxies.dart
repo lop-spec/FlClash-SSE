@@ -210,12 +210,15 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '${profiles.length} 个订阅 · 模拟 tok/s 从高到低',
+                        '${profiles.length} 个订阅 · 按淘汰赛得分排序',
                         style: Theme.of(context).textTheme.labelLarge,
                       ),
                     ),
                     const Tooltip(
-                      message: '8 秒固定模拟 SSE，不调用模型。整批 20 秒截止；失败和测速中保留历史有效成绩。',
+                      message:
+                          '全部测速：每个节点连 chatgpt.com 和 api.anthropic.com，只认未登录的 401，不调用模型；ChatGPT 热连接连测 5 次取最小值。\n'
+                          '按出口机房的中位延迟选出最快的两个机房，其中所有节点保持空闲连接，先被掐断的先淘汰，前四名依次加 4、3、2、1 分并累计。\n'
+                          '重启切到最高分节点；Claude 会话或 GPT 桥出现真实连接失败时切到下一名。',
                       child: Icon(Icons.info_outline, size: 18),
                     ),
                   ],
@@ -225,14 +228,38 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                   const LinearProgressIndicator(minHeight: 2),
                   const SizedBox(height: 8),
                   Text(
-                    store.running ? '后台测速中 · 历史成绩保留，可继续切换节点和页面' : '正在读取订阅节点…',
+                    store.tournamentRunning
+                        ? _tournamentProgress()
+                        : store.running
+                        ? '后台初筛中 · 上次成绩保留，可继续切换节点和页面'
+                        : '正在读取订阅节点…',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ] else if (store.attemptedKeys.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Text(
-                    '本轮成功 $successful/${store.attemptedKeys.length} · ${(store.elapsedMs / 1000).toStringAsFixed(2)} 秒',
+                    '本轮初筛成功 $successful/${store.attemptedKeys.length} · ${(store.elapsedMs / 1000).toStringAsFixed(2)} 秒',
                     style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (!store.tournamentRunning && store.tournament.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    _tournamentSummary(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (store.failover.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    _failoverSummary(),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.tertiary,
+                    ),
                   ),
                 ],
                 if (error.isNotEmpty)
@@ -459,6 +486,53 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     );
   }
 
+  String _colos() {
+    final colos = SseHistory.objects(store.tournament['colos']).take(2);
+    return colos
+        .map((c) => '${c['location']} ${(c['latencyMs'] as num?)?.round()}ms')
+        .join('、');
+  }
+
+  String _tournamentProgress() {
+    final entrants = SseHistory.objects(store.tournament['entrants']);
+    final alive = entrants.where((e) => e['alive'] == true).length;
+    final startedAt = (store.tournament['startedAt'] as num?)?.toInt() ?? 0;
+    final seconds = startedAt == 0
+        ? 0
+        : (DateTime.now().millisecondsSinceEpoch - startedAt) ~/ 1000;
+    return '淘汰赛：${_colos()} 共 ${entrants.length} 个节点，剩 $alive 个 · 已 $seconds 秒';
+  }
+
+  String _tournamentSummary() {
+    final t = store.tournament;
+    final error = t['error']?.toString() ?? '';
+    if (error.isNotEmpty) return '最近一场淘汰赛未进行：$error';
+    final entrants = SseHistory.objects(t['entrants']);
+    final podium = (t['podium'] as List?) ?? const [];
+    if (podium.isEmpty) return '尚无淘汰赛结果';
+    final winner = entrants.firstWhere(
+      (e) => e['key'] == podium.first,
+      orElse: () => {},
+    );
+    final idle = ((winner['idleMs'] as num?) ?? 0) / 1000;
+    final finishedAt = (t['finishedAt'] as num?)?.toInt();
+    final when = finishedAt == null
+        ? ''
+        : ' · ${DateTime.fromMillisecondsSinceEpoch(finishedAt).toLocal().toString().substring(5, 16)}';
+    return '最近一场：${_colos()} · ${entrants.length} 个节点 · 冠军 ${winner['name'] ?? '—'}（空闲存活 ${idle.toStringAsFixed(0)} 秒）$when';
+  }
+
+  String _failoverSummary() {
+    final f = store.failover;
+    final at = (f['at'] as num?)?.toInt();
+    final when = at == null
+        ? ''
+        : DateTime.fromMillisecondsSinceEpoch(
+            at,
+          ).toLocal().toString().substring(11, 19);
+    return '自动切换 $when：${f['source']} 连接失败（${f['detail']}）→ ${f['name']}';
+  }
+
   Widget _nodeCard(
     BuildContext context,
     Profile profile,
@@ -468,45 +542,44 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     final record = SseHistory.object(store.history[entry['key']]);
     final good = SseHistory.success(record);
     final latest = SseHistory.object(record['latest']);
-    final speed = good?['tokPerSec'] as num?;
-    String metric(String key) =>
-        (good?[key] as num?)?.toStringAsFixed(1) ?? '—';
+    final latency = good?['latencyMs'] as num?;
+    final score = SseHistory.score(record);
+    String ms(String key) => (good?[key] as num?)?.round().toString() ?? '—';
     final measuredAt = (record['measuredAt'] as num?)?.toInt();
-    final burst = good?['burstRatio'] as num?;
-    final burstText = burst == null
-        ? '—'
-        : '${(burst * 100).toStringAsFixed(1)}%';
-    final details = good == null
-        ? '尚无有效模拟 SSE 成绩'
-        : [
-            '模拟 tok/s，不代表模型吞吐',
-            if (measuredAt != null)
-              '测量时间：${DateTime.fromMillisecondsSinceEpoch(measuredAt).toLocal()}',
-            '首事件 ${metric('firstMs')} ms · 抖动 ${metric('jitterMs')} ms',
-            '最大间隔 ${metric('maxGapMs')} ms · 攒包比例 $burstText',
-            '流式质量：${good['flowPass'] == true ? '合格' : '不合格'}',
-          ].join('\n');
+    final location = good?['location'];
+    final place = (latest['place'] as num?)?.toInt();
+    final idle = ((latest['idleMs'] as num?) ?? 0) / 1000;
+    final details = [
+      '累计得分 $score',
+      if (good != null) ...[
+        'ChatGPT 热连接 5 次：最小 ${ms('latencyMs')} ms · 中位 ${ms('medianMs')} ms',
+        '建连 ${ms('connectMs')} ms${location == null ? '' : ' · 出口机房 $location'}',
+      ] else
+        '尚无有效延迟成绩',
+      if (place != null)
+        '淘汰赛第 $place 名 · 空闲存活 ${idle.toStringAsFixed(0)} 秒${latest['survived'] == true ? '（未断）' : ''}',
+      if (measuredAt != null)
+        '测量时间：${DateTime.fromMillisecondsSinceEpoch(measuredAt).toLocal()}',
+    ].join('\n');
+    final blockedBy = '${latest['error'] ?? ''}'.startsWith('Claude')
+        ? 'Claude'
+        : 'ChatGPT';
     final state = switch (latest['status']) {
+      'blocked' => '$blockedBy 拒绝该出口',
       'failed' => '本轮失败',
       'timeout' => '本轮超时',
       'unmeasured' => '本轮未覆盖',
-      'endpoint' => '测速源不可用',
-      _ =>
-        good == null
-            ? '尚未测速'
-            : good['flowPass'] == false
-            ? '流式质量不合格'
-            : '历史有效成绩',
+      'unsupported' => '节点类型不支持',
+      _ => good == null ? '尚未测速' : '最近一次成绩',
     };
     final colors = Theme.of(context).colorScheme;
-    final failed =
-        [
-          'failed',
-          'timeout',
-          'endpoint',
-          'unmeasured',
-        ].contains(latest['status']) ||
-        good?['flowPass'] == false;
+    final failed = [
+      'blocked',
+      'failed',
+      'timeout',
+      'unmeasured',
+      'unsupported',
+    ].contains(latest['status']);
     return Card.outlined(
       key: ValueKey('sse-node-${profile.id}-${entry['key']}'),
       margin: EdgeInsets.zero,
@@ -556,11 +629,13 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                     ),
                   ),
                 Text(
-                  speed == null
-                      ? '— tok/s'
-                      : '${speed.toStringAsFixed(1)} tok/s',
-                  style: Theme.of(context).textTheme.labelSmall
-                      ?.copyWith(color: colors.primary),
+                  [
+                    if (score > 0) '$score 分',
+                    latency == null ? '— ms' : '${latency.round()} ms',
+                  ].join(' · '),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: score > 0 ? colors.primary : colors.onSurfaceVariant,
+                  ),
                 ),
                 const SizedBox(width: 4),
                 SizedBox(

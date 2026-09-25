@@ -31,6 +31,7 @@ class ProfilesAction extends _$ProfilesAction {
     } else if (!await ref.read(setupActionProvider.notifier).fullSetup()) {
       throw StateError('节点配置应用失败，请检查订阅');
     }
+    SseHistory.instance.activeKey = entry['key']?.toString();
   }
 
   void updateCurrentSelectedMap(String groupName, String proxyName) {

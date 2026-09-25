@@ -217,7 +217,9 @@ class CoreController {
             'name': name ?? '',
             'profileId': profileId ?? 0,
           },
-          timeout: const Duration(seconds: 20),
+          // Screening budget is 30 s plus catalog loading and persistence; the
+          // idle tournament continues in the core and is followed by polling.
+          timeout: const Duration(seconds: 45),
         ) ??
         <String, dynamic>{};
   }

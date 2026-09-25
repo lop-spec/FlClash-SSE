@@ -19,6 +19,7 @@ import '../helpers/test_profiles.dart';
 class _Core extends CoreHandlerInterface {
   final calls = <CoreMethod>[];
   Map<String, dynamic> response = {};
+  final queue = <Map<String, dynamic>>[];
   bool fail = false;
   Completer<Map<String, dynamic>>? pendingCatalog;
 
@@ -44,6 +45,7 @@ class _Core extends CoreHandlerInterface {
     if (method == CoreMethod.sseCatalog && pendingCatalog != null) {
       return (await pendingCatalog!.future) as T;
     }
+    if (queue.isNotEmpty) return queue.removeAt(0) as T;
     return response as T;
   }
 }
@@ -106,20 +108,19 @@ Map<String, dynamic> catalog() => {
     },
   ],
   'history': {
-    for (final (key, speed, pass) in [
-      ('old', 99, true),
-      ('buffered', 40, false),
-      ('good', 19, true),
-    ])
-      key: {
-        'lastSuccess': {
-          'status': 'done',
-          'tokens': 161,
-          'tokPerSec': speed,
-          'flowPass': pass,
-        },
-      },
+    'old': {'score': 20, 'latest': done(120)},
+    'buffered': {
+      'score': 9,
+      'latest': {'status': 'blocked', 'error': 'Claude: HTTP 403'},
+    },
+    'good': {'score': 5, 'latest': done(180)},
   },
+};
+
+Map<String, dynamic> done(num latency) => {
+  'status': 'done',
+  'samples': SseHistory.samples,
+  'latencyMs': latency,
 };
 
 void main() {
@@ -132,6 +133,7 @@ void main() {
     SseHistory.instance.nodes = [];
     SseHistory.instance.history = {};
     SseHistory.instance.attemptedKeys = {};
+    SseHistory.instance.tournament = {};
     native = _Core()..response = catalog();
     core = CoreController.scoped(native);
     container = ProviderContainer(
@@ -223,7 +225,7 @@ void main() {
     },
   );
 
-  test('startup selects a surviving flow-passing history candidate without measuring', () async {
+  test('startup selects the top-scoring surviving usable node without measuring', () async {
     await container.read(setupActionProvider.notifier).initStatus();
     expect(container.read(currentProfileIdProvider), 2);
     expect(container.read(profilesProvider).last.selectedMap, {
@@ -270,18 +272,54 @@ void main() {
       await store.load(core, [1, 2]);
       final pending = store.run(core, [1, 2]);
       expect(store.running, isTrue);
-      expect(SseHistory.success(store.history['good'])?['tokPerSec'], 19);
+      expect(SseHistory.latency(store.history['good']), 180);
       await pending;
       expect(store.running, isFalse);
       native.fail = true;
       await store.run(core, [1, 2], profileId: 2, name: 'winner');
-      expect(store.error, contains('历史成绩保留'));
+      expect(store.error, contains('上次成绩保留'));
       expect(store.running, isFalse);
-      expect(SseHistory.success(store.history['good'])?['tokPerSec'], 19);
+      expect(SseHistory.latency(store.history['good']), 180);
+      expect(SseHistory.score(store.history['good']), 5);
       native.fail = false;
       native.response = {};
       await store.run(core, [1, 2]);
       expect(store.error, contains('no result'));
+      store.dispose();
+    },
+  );
+
+  test(
+    'a full run follows the background tournament until it has scored',
+    () async {
+      final store = SseHistory()..pollInterval = Duration.zero;
+      Map<String, dynamic> withTournament(bool running, int score) => {
+        ...catalog(),
+        'history': {
+          ...catalog()['history'] as Map,
+          'good': {'score': score, 'latest': done(180)},
+        },
+        'tournament': {
+          'running': running,
+          'startedAt': DateTime.now().millisecondsSinceEpoch,
+          'limitMs': 60000,
+          'podium': running ? [] : ['good'],
+        },
+      };
+      native.queue.addAll([
+        withTournament(true, 5),
+        withTournament(true, 5),
+        withTournament(false, 9),
+      ]);
+      await store.run(core, [1, 2]);
+      expect(store.running, isFalse);
+      expect(store.tournamentRunning, isFalse);
+      expect(SseHistory.score(store.history['good']), 9);
+      expect(native.calls, [
+        CoreMethod.sseBatch,
+        CoreMethod.sseCatalog,
+        CoreMethod.sseCatalog,
+      ]);
       store.dispose();
     },
   );

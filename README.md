@@ -1,6 +1,6 @@
 # FlClash SSE — isolated Windows edition
 
-Synthetic SSE tok/s, preserved valid history, and startup candidate selection. No model calls. Separate app, service and data identity; system proxy and automatic DNS changes default to off.
+Scores nodes for ChatGPT and Claude: unauthenticated 401 gates, warm ChatGPT latency per exit colo, and an idle-connection tournament in the two fastest colos. Restarts restore the top score and real connection failures in Claude sessions or the GPT bridge fail over to the next node. No model calls. Separate app, service and data identity; system proxy and automatic DNS changes default to off.
 
 **[SSE edition documentation](README-SSE.md) · [SSE Windows releases](https://github.com/lop-spec/FlClash-SSE/releases)**
 

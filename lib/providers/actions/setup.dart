@@ -99,6 +99,7 @@ class SetupAction extends _$SetupAction {
     }
     commonPrint.log('init status');
     await _restoreSseCandidate();
+    _startSseFailover();
     if (system.isAndroid) {
       await _updateStartTime();
     }
@@ -111,6 +112,80 @@ class SetupAction extends _$SetupAction {
   }
 
   bool _restoredSseCandidate = false;
+  SseFailover? _sseFailover;
+
+  /// Real Claude/ChatGPT connection failures move to the next ranked node.
+  void _startSseFailover() {
+    if (_sseFailover != null ||
+        !system.isWindows ||
+        Platform.environment.containsKey('FLUTTER_TEST')) {
+      return;
+    }
+    final home = Platform.environment['USERPROFILE'];
+    final local = Platform.environment['LOCALAPPDATA'];
+    if (home == null || local == null) {
+      commonPrint.log(
+        'SSE failover: user directories unavailable; monitor not started',
+        logLevel: LogLevel.warning,
+      );
+      return;
+    }
+    _sseFailover = SseFailover(
+      claudeProjects: join(home, '.claude', 'projects'),
+      bridgeLog: join(
+        local,
+        'pi-web',
+        'portable',
+        'data',
+        'codex-responses-proxy.log',
+      ),
+      port: () => ref.read(patchClashConfigProvider).mixedPort,
+      onFailure: _failover,
+      onSuppressed: (failure) => commonPrint.log(
+        'SSE failover: $failure within cooldown; selection kept',
+      ),
+    )..start();
+    commonPrint.log(
+      'SSE failover: watching Claude sessions and the GPT bridge log',
+    );
+  }
+
+  Future<void> _failover(SseFailure failure) async {
+    final history = SseHistory.instance;
+    final profile = ref.read(currentProfileProvider);
+    final current = history.currentKey(
+      profile?.id,
+      profile?.selectedMap ?? const {},
+    );
+    final next = history.next(
+      current,
+      ref.read(profilesProvider).map((p) => p.id),
+    );
+    if (next == null) {
+      commonPrint.log(
+        'SSE failover: $failure; no ranked alternative, selection kept',
+        logLevel: LogLevel.warning,
+      );
+      return;
+    }
+    try {
+      await ref.read(profilesActionProvider.notifier).selectSseNode(next);
+      history.recordFailover({
+        'at': DateTime.now().millisecondsSinceEpoch,
+        'source': failure.source,
+        'detail': failure.detail,
+        'from': current,
+        'to': next['key'],
+        'name': next['name'],
+      });
+      commonPrint.log('SSE failover: $failure; switched to ${next['name']}');
+    } catch (error) {
+      commonPrint.log(
+        'SSE failover: switch to ${next['name']} failed: $error',
+        logLevel: LogLevel.warning,
+      );
+    }
+  }
 
   Future<void> _restoreSseCandidate() async {
     if (_restoredSseCandidate) return;
@@ -129,7 +204,7 @@ class SetupAction extends _$SetupAction {
       final winner = history.candidate(ids);
       if (winner == null) {
         commonPrint.log(
-          'SSE startup: no available historical candidate; selection retained',
+          'SSE startup: no scored node available; selection retained',
         );
         return;
       }
@@ -144,8 +219,9 @@ class SetupAction extends _$SetupAction {
             ),
           );
       ref.read(currentProfileIdProvider.notifier).value = profile.id;
+      history.activeKey = winner['key']?.toString();
       commonPrint.log(
-        'SSE startup: restored historical candidate ${winner['name']} from profile ${profile.id}; no probe issued',
+        'SSE startup: restored top-scoring node ${winner['name']} from profile ${profile.id}; no probe issued',
       );
     } catch (error) {
       commonPrint.log(

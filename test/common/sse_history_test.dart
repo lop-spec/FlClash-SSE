@@ -1,12 +1,22 @@
 import 'package:fl_clash/common/sse_history.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-Map<String, dynamic> good(double speed) => {
+Map<String, dynamic> done(num latency) => {
   'status': 'done',
-  'tokens': 161,
-  'tokPerSec': speed,
-  'elapsedMs': 8400,
-  'flowPass': true,
+  'samples': SseHistory.samples,
+  'latencyMs': latency,
+};
+
+Map<String, dynamic> node(String key, List<int> profiles) => {
+  'key': key,
+  'aliases': [
+    for (final id in profiles)
+      {
+        'profileId': id,
+        'name': '$key@$id',
+        'selections': {'GLOBAL': '$key@$id'},
+      },
+  ],
 };
 
 void main() {
@@ -45,11 +55,12 @@ void main() {
     expect(store.attemptedKeys, {'changed'});
     store.dispose();
   });
-  test('subscription memberships are deduplicated, searched and sorted by valid history', () {
+
+  test('subscriptions sort by score, then latest latency; untested nodes last', () {
     final store = SseHistory();
     store.accept({
       'nodes': [
-        for (final key in ['unmeasured', 'slow', 'fast', 'tie'])
+        for (final key in ['untested', 'fast', 'champion', 'runner', 'tie'])
           {
             'key': key,
             'aliases': [
@@ -60,114 +71,139 @@ void main() {
           },
       ],
       'history': {
-        'fast': {'lastSuccess': good(19.8)},
-        'slow': {'lastSuccess': good(17.0)},
-        'tie': {'lastSuccess': good(17.0)},
-        'unmeasured': {'lastSuccess': good(0)},
+        'champion': {'score': 8, 'latest': done(240)},
+        'runner': {'score': 3, 'latest': done(130)},
+        'tie': {'score': 3, 'latest': done(120)},
+        'fast': {'score': 0, 'latest': done(90)},
       },
       'elapsedMs': 8512,
     });
     expect(store.entriesFor(1).map((n) => n['key']), [
-      'fast',
-      'slow',
+      'champion',
       'tie',
-      'unmeasured',
+      'runner',
+      'fast',
+      'untested',
     ]);
     expect(store.entriesFor(2, query: 'FAST').single['name'], 'fast alias');
-    expect(store.entriesFor(1, query: 'copy').length, 4);
+    expect(store.entriesFor(1, query: 'copy').length, 5);
     expect(store.entriesFor(3), isEmpty);
     store.accept({'nodes': store.nodes, 'elapsedMs': 0}, measurement: false);
     expect(store.elapsedMs, 8512);
-    expect(store.attemptedKeys.length, 4);
+    expect(store.attemptedKeys.length, 5);
     store.dispose();
   });
 
-  test('failed, pending and zero scores never erase valid displayed toks', () {
+  test('a fresh failure replaces the latency but never the score', () {
     final store = SseHistory();
     store.accept({
       'history': {
-        'node': {'lastSuccess': good(19.1), 'measuredAt': 123},
+        'node': {'score': 7, 'latest': done(180), 'measuredAt': 123},
       },
     });
-    for (final state in [
-      'running',
-      'failed',
-      'timeout',
-      'unmeasured',
-      'endpoint',
-      'done',
-    ]) {
-      store.accept({
-        'history': {
-          'node': {
-            'latest': {'status': state},
-            'lastSuccess': good(0),
-          },
-        },
-      });
-      expect(SseHistory.success(store.history['node'])?['tokPerSec'], 19.1);
-      expect(SseHistory.object(store.history['node'])['measuredAt'], 123);
-    }
+    expect(SseHistory.latency(store.history['node']), 180);
     store.accept({
       'history': {
-        'node': {'lastSuccess': good(19.5), 'measuredAt': 456},
+        'node': {
+          'score': 7,
+          'latest': {'status': 'timeout'},
+          'measuredAt': 456,
+        },
       },
     });
-    expect(SseHistory.success(store.history['node'])?['tokPerSec'], 19.5);
+    expect(SseHistory.latency(store.history['node']), isNull);
+    expect(SseHistory.score(store.history['node']), 7);
     store.dispose();
   });
 
-  test(
-    'startup candidate must still exist and preserve subscription membership',
-    () {
-      final store = SseHistory();
-      store.accept({
-        'nodes': [
-          {
-            'key': 'old',
-            'aliases': [
-              {'profileId': 1, 'name': 'fast'},
-            ],
-          },
-          {
-            'key': 'present',
-            'aliases': [
-              {'profileId': 2, 'name': 'same-name'},
-              {'profileId': 3, 'name': 'renamed'},
-            ],
-          },
-        ],
-        'history': {
-          'old': {'lastSuccess': good(20)},
-          'present': {'lastSuccess': good(19)},
+  test('startup candidate is the top score that still exists and is not blocked', () {
+    final store = SseHistory();
+    store.accept({
+      'nodes': [
+        node('removed', [404]),
+        node('blocked', [1]),
+        node('winner', [2, 3]),
+        node('unscored', [2]),
+      ],
+      'history': {
+        'removed': {'score': 30, 'latest': done(100)},
+        'blocked': {
+          'score': 20,
+          'latest': {'status': 'blocked', 'error': 'Claude: HTTP 403'},
         },
-      });
-      expect(store.candidate([3])?['name'], 'renamed');
-      expect(store.candidate([3])?['profileId'], 3);
-      expect(store.candidate([4]), isNull);
-      expect(
-        SseHistory.success(store.recordFor(2, 'same-name'))?['tokPerSec'],
-        19,
-      );
-      store.accept({'nodes': [], 'history': {}});
-      expect(store.candidate([1, 2, 3]), isNull);
-      expect(SseHistory.success(store.history['old']), isNotNull);
-      store.dispose();
-    },
-  );
+        'winner': {'score': 4, 'latest': done(300)},
+        'unscored': {'latest': done(90)},
+      },
+    });
+    expect(store.candidate([1, 2, 3])?['key'], 'winner');
+    expect(store.candidate([3])?['profileId'], 3);
+    expect(store.candidate([4]), isNull);
+    store.accept({
+      'history': {
+        'winner': {'score': 0, 'latest': done(300)},
+      },
+    });
+    expect(store.candidate([1, 2, 3]), isNull);
+    store.dispose();
+  });
 
-  test(
-    'invalid non-finite or incomplete measurements cannot select a node',
-    () {
-      for (final speed in [double.nan, double.infinity, -1.0, 0.0]) {
-        expect(SseHistory.success({'lastSuccess': good(speed)}), isNull);
-      }
-      expect(
-        SseHistory.success({
-          'lastSuccess': {...good(19), 'tokens': 160},
-        }),
-        isNull,
-      );
-    },
-  );
+  test('failover walks the ranking in order and wraps to the top', () {
+    final store = SseHistory();
+    store.accept({
+      'nodes': [
+        node('first', [1]),
+        node('second', [1]),
+        node('third', [1]),
+        node('down', [1]),
+      ],
+      'history': {
+        'first': {'score': 9, 'lastAwardAt': 1, 'latest': done(200)},
+        'second': {'score': 4, 'latest': done(150)},
+        'third': {'latest': done(120)},
+        'down': {
+          'score': 12,
+          'latest': {'status': 'blocked'},
+        },
+      },
+    });
+    expect(store.ranking([1]).map((e) => e['key']), [
+      'first',
+      'second',
+      'third',
+    ]);
+    expect(store.next('first', [1])?['key'], 'second');
+    expect(store.next('third', [1])?['key'], 'first');
+    expect(store.next('down', [1])?['key'], 'first');
+    expect(store.next(null, [1])?['key'], 'first');
+    expect(store.next('first', [2]), isNull);
+    store.dispose();
+  });
+
+  test('the current node follows the GLOBAL path before the last choice', () {
+    final store = SseHistory();
+    store.accept({
+      'nodes': [
+        node('a', [1]),
+        node('b', [1]),
+      ],
+    });
+    store.activeKey = 'b';
+    expect(store.currentKey(1, {'GLOBAL': 'a@1'}), 'a');
+    expect(store.currentKey(1, {'GLOBAL': 'gone'}), 'b');
+    store.activeKey = 'missing';
+    expect(store.currentKey(1, {}), isNull);
+    store.dispose();
+  });
+
+  test('invalid or incomplete measurements have no latency', () {
+    for (final latency in [double.nan, double.infinity, -1.0, 0.0]) {
+      expect(SseHistory.latency({'latest': done(latency)}), isNull);
+    }
+    expect(
+      SseHistory.latency({
+        'latest': {...done(120), 'samples': 4},
+      }),
+      isNull,
+    );
+  });
 }

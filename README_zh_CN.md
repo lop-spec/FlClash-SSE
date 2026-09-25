@@ -1,6 +1,6 @@
 # FlClash SSE — Windows 隔离版
 
-模拟 SSE tok/s 测速，保留历史有效成绩，启动自动选择仍存在的历史候选；不调用模型。应用、服务、数据独立，默认不修改系统代理或 DNS。
+为 ChatGPT 和 Claude 给节点打分：未登录 401 门、按出口机房比较 ChatGPT 热连接延迟、最快两个机房内的空闲连接淘汰赛；重启切到最高分节点，Claude 会话或 GPT 桥出现真实连接失败时切到下一名；不调用模型。应用、服务、数据独立，默认不修改系统代理或 DNS。
 
 **[SSE 版说明](README-SSE.md) · [SSE 安装包](https://github.com/lop-spec/FlClash-SSE/releases)**
 

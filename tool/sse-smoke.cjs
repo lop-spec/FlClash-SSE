@@ -15,7 +15,7 @@ let fail = false;
 const sockets = new Set();
 const processes = new Set();
 const services = [];
-const watchdog = setTimeout(() => { console.error('smoke deadline exceeded'); cleanup(); process.exit(1); }, 29000);
+const watchdog = setTimeout(() => { console.error('smoke deadline exceeded'); cleanup(); process.exit(1); }, 60000);
 function cleanup() {
   clearTimeout(watchdog);
   for (const socket of sockets) socket.destroy();
@@ -110,33 +110,46 @@ async function startCore() {
   fs.writeFileSync(path.join(home, 'profiles/2.yaml'), 'proxies:\n' + node('same-node-renamed', ports[0]) + node('node-two', ports[1]));
   let core = await startCore();
   const start = Date.now();
-  const initial = await core.call('sseBatch', { profiles: [1, 2] });
+  const initial = await core.call('sseBatch', { profiles: [1, 2], tournamentLimitMs: 4000 });
   assert.equal(initial.error, undefined);
   assert.equal(initial.nodes.length, 2);
   assert.equal(initial.nodes.reduce((n, node) => n + node.aliases.length, 0), 3);
   assert.equal(initial.issues.length, 0);
-  const before = {};
+  const statuses = {};
   for (const node of initial.nodes) {
-    const record = initial.history[node.key];
-    assert.equal(record.latest.status, 'done', JSON.stringify(record.latest));
-    assert.equal(record.lastSuccess.tokens, 161);
-    assert.equal(record.lastSuccess.flowPass, true, 'complete streams must also be usable startup candidates');
-    assert.ok(record.lastSuccess.tokPerSec > 0);
-    before[node.key] = record.lastSuccess.tokPerSec;
+    const latest = initial.history[node.key].latest;
+    // A hosted runner exit may be refused by ChatGPT or Claude; that is still a
+    // definite classification, unlike a transport failure or timeout.
+    assert.ok(['done', 'blocked'].includes(latest.status), JSON.stringify(latest));
+    if (latest.status === 'done') assert.ok(latest.samples === 5 && latest.latencyMs > 0 && latest.location, JSON.stringify(latest));
+    statuses[node.key] = latest.status;
   }
-  const duration = Date.now() - start; assert.ok(duration < 20000);
+  const screenMs = Date.now() - start; assert.ok(screenMs < 30000);
+  assert.ok(initial.tournament, 'full run must report the tournament');
+  let tournament = initial.tournament;
+  for (let i = 0; tournament.running && i < 40; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    tournament = (await core.call('sseCatalog', { profiles: [1, 2] })).tournament;
+  }
+  assert.equal(tournament.running, false, 'tournament must finish within its limit');
+  const reachable = Object.values(statuses).filter(s => s === 'done').length;
+  if (reachable) assert.equal(tournament.podium.length, reachable, JSON.stringify(tournament));
+  else assert.ok(tournament.error, 'an empty field must say why no tournament ran');
+  const scored = await core.call('sseCatalog', { profiles: [1, 2] });
+  const scores = {};
+  for (const node of initial.nodes) scores[node.key] = scored.history[node.key].score || 0;
+  if (reachable) assert.deepEqual(Object.values(scores).sort(), reachable === 2 ? [3, 4] : [0, 4]);
   await core.close();
   fail = true;
   core = await startCore();
   const restored = await core.call('sseCatalog', { profiles: [1, 2] });
-  for (const [key, speed] of Object.entries(before)) assert.equal(restored.history[key].lastSuccess.tokPerSec, speed);
-  const failed = await core.call('sseBatch', { profiles: [1, 2] });
-  for (const [key, speed] of Object.entries(before)) {
-    assert.notEqual(failed.history[key].latest.status, 'done');
-    assert.equal(failed.history[key].lastSuccess.tokPerSec, speed);
-  }
+  for (const [key, score] of Object.entries(scores)) assert.equal(restored.history[key].score || 0, score);
+  const failed = await core.call('sseBatch', { profiles: [1, 2], name: 'node-one', profileId: 1 });
+  const failedKey = failed.nodes[0].key;
+  assert.notEqual(failed.history[failedKey].latest.status, 'done');
+  assert.equal(failed.history[failedKey].score || 0, scores[failedKey], 'a failure must not erase the score');
   await core.close();
-  const disk = JSON.parse(fs.readFileSync(path.join(home, 'sse-history-v1.json'), 'utf8'));
-  for (const [key, speed] of Object.entries(before)) assert.equal(disk.results[key].lastSuccess.tokPerSec, speed);
-  console.log(JSON.stringify({ success: true, nodes: 2, memberships: 3, elapsedMs: duration, restoredAfterRestart: true, preservedAfterFailure: true, home }));
+  const disk = JSON.parse(fs.readFileSync(path.join(home, 'node-score-v1.json'), 'utf8'));
+  for (const [key, score] of Object.entries(scores)) assert.equal(disk.results[key].score || 0, score);
+  console.log(JSON.stringify({ success: true, nodes: 2, memberships: 3, statuses, screenMs, tournament: { entrants: tournament.entrants?.length || 0, podium: tournament.podium?.length || 0, error: tournament.error }, scores, restoredAfterRestart: true, scoreKeptAfterFailure: true, home }));
 })().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(cleanup);

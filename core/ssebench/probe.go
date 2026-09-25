@@ -1,24 +1,31 @@
 package ssebench
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
-	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
-const Profile = "fc-sse-v1-256b-50ms-8s"
-const Samples = 161
-const FrameBytes = 256
-const MaxConcurrency = 512
-const Budget = 19 * time.Second
+const Profile = "chatgpt-claude-colo-idle-v1"
+const ChatGPTURL = "https://chatgpt.com/backend-api/codex/models"
+const ClaudeURL = "https://api.anthropic.com/v1/models"
+const Samples = 5
+const MaxConcurrency = 32
+const Budget = 30 * time.Second
+
+// Awards are the points for the idle tournament podium, best first.
+var Awards = []int{4, 3, 2, 1}
 
 type Result struct {
 	Key        string  `json:"key"`
@@ -26,149 +33,251 @@ type Result struct {
 	Profiles   []int64 `json:"profiles"`
 	Status     string  `json:"status"`
 	Error      string  `json:"error,omitempty"`
-	Tokens     int     `json:"tokens"`
-	TokPerSec  float64 `json:"tokPerSec"`
-	FirstMs    float64 `json:"firstMs"`
-	JitterMs   float64 `json:"jitterMs"`
-	MaxGapMs   float64 `json:"maxGapMs"`
-	BurstRatio float64 `json:"burstRatio"`
-	ElapsedMs  float64 `json:"elapsedMs"`
+	Samples    int     `json:"samples"`
+	LatencyMs  float64 `json:"latencyMs"`
+	MedianMs   float64 `json:"medianMs"`
+	ConnectMs  float64 `json:"connectMs"`
+	HTTPStatus int     `json:"httpStatus,omitempty"`
 	Location   string  `json:"location,omitempty"`
-	FlowPass   bool    `json:"flowPass"`
+	IdleMs     float64 `json:"idleMs,omitempty"`
+	Place      int     `json:"place,omitempty"`
+	Survived   bool    `json:"survived,omitempty"`
+	ElapsedMs  float64 `json:"elapsedMs"`
 }
 
-type Doer interface {
-	Do(*http.Request) (*http.Response, error)
-}
-type sample struct {
-	Seq         int     `json:"seq"`
-	SentMs      float64 `json:"sentMs"`
-	ScheduledMs float64 `json:"scheduledMs"`
+// Dialer opens a TCP stream to host:port through one node.
+type Dialer func(ctx context.Context, address string) (net.Conn, error)
+
+// Targets lets tests point both gates at local servers; TLS only supplies roots.
+type Targets struct {
+	ChatGPT string
+	Claude  string
+	TLS     *tls.Config
 }
 
-func (s *sample) UnmarshalJSON(data []byte) error {
-	var fields struct {
-		Seq         *int     `json:"seq"`
-		SentMs      *float64 `json:"sentMs"`
-		ScheduledMs *float64 `json:"scheduledMs"`
+var Production = Targets{ChatGPT: ChatGPTURL, Claude: ClaudeURL}
+
+// Session is the warm ChatGPT connection that the idle tournament watches.
+type Session struct {
+	conn    net.Conn
+	cc      *http2.ClientConn
+	release func()
+}
+
+func (s *Session) Closed() bool { return s == nil || s.cc.State().Closed }
+
+func (s *Session) Close() {
+	if s == nil {
+		return
 	}
-	if err := json.Unmarshal(data, &fields); err != nil {
+	s.cc.Close()
+	s.conn.Close()
+	if s.release != nil {
+		s.release()
+	}
+}
+
+// Refresh sends one request so every tournament entrant starts idling together.
+func (s *Session) Refresh(ctx context.Context, rawURL string) error {
+	r, err := send(ctx, s.cc, rawURL)
+	if err != nil {
 		return err
 	}
-	if fields.Seq == nil || fields.SentMs == nil || fields.ScheduledMs == nil {
-		return fmt.Errorf("missing sample clock or sequence")
+	if status, reason := classify(r); status != "done" {
+		return errors.New(reason)
 	}
-	s.Seq, s.SentMs, s.ScheduledMs = *fields.Seq, *fields.SentMs, *fields.ScheduledMs
 	return nil
 }
 
-type arrival struct {
-	sample
-	at float64
+// Adopt ties extra cleanup, such as the node adapter, to the session lifetime.
+func (s *Session) Adopt(release func()) { s.release = release }
+
+var errNoHTTP2 = errors.New("server did not negotiate HTTP/2")
+
+func millis(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+
+func open(ctx context.Context, dial Dialer, rawURL string, base *tls.Config) (*Session, float64, error) {
+	target, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, 0, err
+	}
+	port := target.Port()
+	if port == "" {
+		port = "443"
+	}
+	begin := time.Now()
+	raw, err := dial(ctx, net.JoinHostPort(target.Hostname(), port))
+	if err != nil {
+		return nil, 0, err
+	}
+	config := &tls.Config{}
+	if base != nil {
+		config = base.Clone()
+	}
+	config.ServerName, config.NextProtos = target.Hostname(), []string{"h2"}
+	conn := tls.Client(raw, config)
+	handshake, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	if err = conn.HandshakeContext(handshake); err != nil {
+		raw.Close()
+		return nil, 0, err
+	}
+	if conn.ConnectionState().NegotiatedProtocol != "h2" {
+		conn.Close()
+		return nil, 0, errNoHTTP2
+	}
+	cc, err := (&http2.Transport{}).NewClientConn(conn)
+	if err != nil {
+		conn.Close()
+		return nil, 0, err
+	}
+	return &Session{conn: conn, cc: cc}, millis(time.Since(begin)), nil
 }
 
-func Probe(ctx context.Context, client Doer, endpoint string) Result {
+type reply struct {
+	status    int
+	ray       string
+	mitigated string
+	body      string
+	ms        float64
+}
+
+func send(ctx context.Context, cc *http2.ClientConn, rawURL string) (reply, error) {
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return reply{}, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "FlClashSSE-latency/1")
+	begin := time.Now()
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		return reply{}, err
+	}
+	ms := millis(time.Since(begin))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	resp.Body.Close()
+	return reply{resp.StatusCode, resp.Header.Get("Cf-Ray"), resp.Header.Get("Cf-Mitigated"), string(body), ms}, nil
+}
+
+// An unauthenticated 401 is the only proof the exit reached the service;
+// region blocks and Cloudflare challenges answer 403 before authentication.
+func classify(r reply) (string, string) {
+	switch {
+	case r.status == http.StatusUnauthorized:
+		return "done", ""
+	case r.status == http.StatusForbidden && strings.Contains(r.body, "unsupported_country"):
+		return "blocked", "unsupported region"
+	case r.status == http.StatusForbidden && (r.mitigated != "" || strings.Contains(r.body, "challenge")):
+		return "blocked", "Cloudflare challenge"
+	case r.status == http.StatusForbidden:
+		return "blocked", "HTTP 403"
+	default:
+		return "failed", fmt.Sprintf("HTTP %d", r.status)
+	}
+}
+
+func location(ray string) string {
+	if i := strings.LastIndexByte(ray, '-'); i >= 0 {
+		return ray[i+1:]
+	}
+	return ""
+}
+
+func summarize(values []float64) (median, low float64) {
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	n := len(sorted)
+	median = sorted[n/2]
+	if n%2 == 0 {
+		median = (sorted[n/2-1] + sorted[n/2]) / 2
+	}
+	return median, sorted[0]
+}
+
+func failure(ctx context.Context, stage string) Result {
+	if ctx.Err() != nil {
+		return Result{Status: "timeout", Error: "batch deadline reached"}
+	}
+	return Result{Status: "failed", Error: stage}
+}
+
+func gate(ctx context.Context, dial Dialer, rawURL string, base *tls.Config) Result {
+	s, _, err := open(ctx, dial, rawURL, base)
+	if err != nil {
+		return failure(ctx, "connection or TLS failed")
+	}
+	defer s.Close()
+	r, err := send(ctx, s.cc, rawURL)
+	if err != nil {
+		return failure(ctx, "connection dropped")
+	}
+	status, reason := classify(r)
+	return Result{Status: status, Error: reason, HTTPStatus: r.status}
+}
+
+func screenChatGPT(ctx context.Context, dial Dialer, t Targets) (Result, *Session) {
+	s, connectMs, err := open(ctx, dial, t.ChatGPT, t.TLS)
+	if err != nil {
+		return failure(ctx, "connection or TLS failed"), nil
+	}
+	first, err := send(ctx, s.cc, t.ChatGPT)
+	if err != nil {
+		s.Close()
+		return failure(ctx, "connection dropped"), nil
+	}
+	if status, reason := classify(first); status != "done" {
+		s.Close()
+		return Result{Status: status, Error: reason, HTTPStatus: first.status, ConnectMs: connectMs}, nil
+	}
+	values := make([]float64, 0, Samples)
+	for i := 0; i < Samples; i++ {
+		r, err := send(ctx, s.cc, t.ChatGPT)
+		if err != nil {
+			s.Close()
+			return failure(ctx, "connection dropped while sampling"), nil
+		}
+		if status, reason := classify(r); status != "done" {
+			s.Close()
+			return Result{Status: status, Error: fmt.Sprintf("sample %d: %s", i+1, reason), HTTPStatus: r.status}, nil
+		}
+		values = append(values, r.ms)
+	}
+	median, low := summarize(values)
+	return Result{
+		Status:     "done",
+		Samples:    Samples,
+		LatencyMs:  low,
+		MedianMs:   median,
+		ConnectMs:  connectMs,
+		HTTPStatus: first.status,
+		Location:   location(first.ray),
+	}, s
+}
+
+// Screen measures warm ChatGPT request latency and checks that Claude is not
+// blocked on the same exit, because one node carries both services. Sequential
+// samples matter: overlapping requests on one connection distort the timing.
+func Screen(ctx context.Context, dial Dialer, t Targets) (Result, *Session) {
 	start := time.Now()
-	fail := func(status, reason string) Result {
-		return Result{Status: status, Error: reason, ElapsedMs: float64(time.Since(start).Microseconds()) / 1000}
+	claude := make(chan Result, 1)
+	go func() { claude <- gate(ctx, dial, t.Claude, t.TLS) }()
+	r, session := screenChatGPT(ctx, dial, t)
+	var c Result
+	select {
+	case c = <-claude:
+	case <-ctx.Done():
+		c = Result{Status: "timeout", Error: "batch deadline reached"}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return fail("endpoint", "invalid test URL")
+	if r.Status == "done" && c.Status != "done" {
+		session.Close()
+		session = nil
+		r.Status, r.Error, r.HTTPStatus = c.Status, "Claude: "+c.Error, c.HTTPStatus
 	}
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("Cache-Control", "no-cache")
-	resp, err := client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return fail("timeout", "batch deadline reached")
-		}
-		return fail("failed", "connection or TLS failed")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fail("endpoint", fmt.Sprintf("test source HTTP %d", resp.StatusCode))
-	}
-	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") || resp.Header.Get("X-Stream-Quality-Profile") != Profile {
-		return fail("endpoint", "incompatible SSE source")
-	}
-	if enc := resp.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
-		return fail("endpoint", "compressed stream rejected")
-	}
-	reader := bufio.NewReaderSize(io.LimitReader(resp.Body, Samples*FrameBytes+4096), 4096)
-	events := make([]arrival, 0, Samples)
-	for {
-		var block strings.Builder
-		for {
-			line, e := reader.ReadString('\n')
-			block.WriteString(line)
-			if block.Len() > 4096 {
-				return fail("measurement", "oversized SSE frame")
-			}
-			if e != nil {
-				if ctx.Err() != nil {
-					return fail("timeout", "batch deadline reached")
-				}
-				return fail("failed", "truncated SSE stream")
-			}
-			if line == "\n" {
-				break
-			}
-		}
-		at := float64(time.Since(start).Microseconds()) / 1000
-		text := block.String()
-		lines := strings.Split(strings.TrimSuffix(text, "\n\n"), "\n")
-		if len(lines) != 2 || !strings.HasPrefix(lines[1], "data: ") {
-			return fail("measurement", "invalid SSE frame")
-		}
-		data := strings.TrimPrefix(lines[1], "data: ")
-		switch lines[0] {
-		case "event: sample":
-			var s sample
-			if json.Unmarshal([]byte(data), &s) != nil || len(events) >= Samples || len(text) != FrameBytes || s.Seq != len(events) || s.ScheduledMs != float64(s.Seq*50) || math.IsNaN(s.SentMs) || math.IsInf(s.SentMs, 0) || s.SentMs < 0 || (len(events) > 0 && s.SentMs < events[len(events)-1].SentMs) {
-				return fail("measurement", "invalid sequence, timing or frame size")
-			}
-			if math.Abs(s.SentMs-s.ScheduledMs) > 250 {
-				return fail("endpoint", "source missed its schedule")
-			}
-			events = append(events, arrival{s, at})
-		case "event: end":
-			var end struct {
-				Profile string `json:"profile"`
-				Samples int    `json:"samples"`
-			}
-			if json.Unmarshal([]byte(data), &end) != nil || end.Profile != Profile || end.Samples != Samples || len(events) != Samples {
-				return fail("measurement", "incomplete SSE terminal")
-			}
-			extra, queues := make([]float64, 0, Samples-1), make([]float64, 0, Samples)
-			bursts := 0
-			first := events[0]
-			for i, e := range events {
-				queues = append(queues, (e.at-first.at)-(e.SentMs-first.SentMs))
-				if i > 0 {
-					prev := events[i-1]
-					received, sent := e.at-prev.at, e.SentMs-prev.SentMs
-					extra = append(extra, math.Max(0, received-sent))
-					if received < 5 && sent >= 25 {
-						bursts++
-					}
-				}
-			}
-			sort.Float64s(extra)
-			sort.Float64s(queues)
-			jitter := percentile(queues, .95) - percentile(queues, .05)
-			gap := extra[len(extra)-1]
-			burst := float64(bursts) / float64(Samples-1)
-			return Result{Status: "done", Tokens: Samples, TokPerSec: float64(Samples) * 1000 / math.Max(at, 1), FirstMs: first.at, JitterMs: jitter, MaxGapMs: gap, BurstRatio: burst, ElapsedMs: at, Location: resp.Header.Get("X-Stream-Quality-Location"), FlowPass: jitter <= 100 && gap <= 500 && burst <= .1}
-		default:
-			return fail("measurement", "unknown SSE event")
-		}
-	}
-}
-
-func percentile(sorted []float64, q float64) float64 {
-	return sorted[int(math.Ceil(q*float64(len(sorted))))-1]
+	r.ElapsedMs = millis(time.Since(start))
+	return r, session
 }
 
 type Job struct {

@@ -2,9 +2,9 @@ package ssebench
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/tls"
 	"fmt"
-	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,56 +13,163 @@ import (
 	"time"
 )
 
-func testFrame(i int, sent float64) string {
-	data := map[string]any{"seq": i, "sentMs": sent, "scheduledMs": i * 50, "pad": ""}
-	b, _ := json.Marshal(data)
-	data["pad"] = strings.Repeat("x", FrameBytes-len("event: sample\ndata: \n\n")-len(b))
-	b, _ = json.Marshal(data)
-	return "event: sample\ndata: " + string(b) + "\n\n"
-}
-func terminal() string {
-	return fmt.Sprintf("event: end\ndata: {\"profile\":%q,\"samples\":%d}\n\n", Profile, Samples)
+type origin struct {
+	server      *httptest.Server
+	connections atomic.Int32
+	requests    atomic.Int32
 }
 
-type doerFunc func(*http.Request) (*http.Response, error)
-
-func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
-func fake(body string) Doer {
-	return doerFunc(func(r *http.Request) (*http.Response, error) {
-		if r.Method != "GET" {
-			panic("must read GET body")
+func newOrigin(t *testing.T, handler func(n int32, w http.ResponseWriter)) *origin {
+	o := &origin{}
+	o.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Errorf("probe must use HTTP/2, got %s", r.Proto)
 		}
-		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}, "X-Stream-Quality-Profile": {Profile}}, Body: io.NopCloser(strings.NewReader(body))}, nil
-	})
+		handler(o.requests.Add(1), w)
+	}))
+	o.server.EnableHTTP2 = true
+	o.server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			o.connections.Add(1)
+		}
+	}
+	o.server.StartTLS()
+	t.Cleanup(o.server.Close)
+	return o
 }
-func TestMissingZeroValuedClockFieldsAreRejected(t *testing.T) {
-	for _, body := range []string{`{"sentMs":0,"scheduledMs":0}`, `{"seq":0,"scheduledMs":0}`, `{"seq":0,"sentMs":0}`, `{"seq":0,"sentMs":null,"scheduledMs":0}`} {
-		var sample sample
-		if json.Unmarshal([]byte(body), &sample) == nil {
-			t.Fatalf("accepted incomplete clock: %s", body)
-		}
+
+func unauthorized(delay func(n int32) time.Duration) func(int32, http.ResponseWriter) {
+	return func(n int32, w http.ResponseWriter) {
+		time.Sleep(delay(n))
+		w.Header().Set("Cf-Ray", fmt.Sprintf("%x-NRT", n))
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"detail":"Unauthorized"}`)
 	}
 }
 
-func TestProtocolRejectsTruncationAndSourceFailure(t *testing.T) {
-	var good strings.Builder
-	for i := 0; i < Samples; i++ {
-		good.WriteString(testFrame(i, float64(i*50)))
+func fixed(d time.Duration) func(int32) time.Duration { return func(int32) time.Duration { return d } }
+
+// The httptest certificate is issued for example.com, so both targets use that
+// name and the dialer routes by port.
+func targets(chatgpt, claude *origin, trusted bool) (Dialer, Targets) {
+	addresses := map[string]string{"1001": chatgpt.server.Listener.Addr().String(), "1002": claude.server.Listener.Addr().String()}
+	var dialer net.Dialer
+	dial := func(ctx context.Context, address string) (net.Conn, error) {
+		_, port, _ := net.SplitHostPort(address)
+		return dialer.DialContext(ctx, "tcp", addresses[port])
 	}
-	cases := map[string]string{"truncated": good.String(), "sequence": testFrame(1, 50), "source": testFrame(0, 300), "oversized": strings.Repeat("x", 4100) + "\n\n", "wrong-terminal": good.String() + "event: end\ndata: {}\n\n"}
-	for name, body := range cases {
+	t := Targets{ChatGPT: "https://example.com:1001/backend-api/codex/models", Claude: "https://example.com:1002/v1/models"}
+	if trusted {
+		t.TLS = &tls.Config{RootCAs: chatgpt.server.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs}
+		t.TLS.RootCAs.AddCert(claude.server.Certificate())
+	}
+	return dial, t
+}
+
+func TestScreenMeasuresSequentialWarmRequestsAndKeepsTheConnection(t *testing.T) {
+	chatgpt := newOrigin(t, unauthorized(fixed(40*time.Millisecond)))
+	claude := newOrigin(t, unauthorized(fixed(0)))
+	dial, targets := targets(chatgpt, claude, true)
+	r, session := Screen(context.Background(), dial, targets)
+	if r.Status != "done" || r.Samples != Samples || r.Location != "NRT" || session == nil || session.Closed() {
+		t.Fatalf("unexpected result: %+v session=%v", r, session)
+	}
+	if r.LatencyMs < 40 || r.LatencyMs > r.MedianMs || r.MedianMs > 400 || r.ConnectMs <= 0 {
+		t.Fatalf("latency outside the served delay: %+v", r)
+	}
+	if chatgpt.connections.Load() != 1 || chatgpt.requests.Load() != Samples+1 || claude.requests.Load() != 1 {
+		t.Fatalf("connections=%d requests=%d claude=%d", chatgpt.connections.Load(), chatgpt.requests.Load(), claude.requests.Load())
+	}
+	if err := session.Refresh(context.Background(), targets.ChatGPT); err != nil || chatgpt.connections.Load() != 1 {
+		t.Fatalf("refresh must reuse the warm connection: %v", err)
+	}
+	session.Close()
+	if !session.Closed() {
+		t.Fatal("closed session still reports open")
+	}
+}
+
+func TestScreenRejectsEitherBlockedService(t *testing.T) {
+	cases := map[string]struct {
+		chatgpt, claude int
+		header, body    string
+		status, reason  string
+	}{
+		"region":    {403, 401, "", `{"detail":{"code":"unsupported_country_region_territory"}}`, "blocked", "unsupported region"},
+		"challenge": {403, 401, "challenge", `<html>Just a moment</html>`, "blocked", "Cloudflare challenge"},
+		"limited":   {429, 401, "", `slow down`, "failed", "HTTP 429"},
+		"hijacked":  {200, 401, "", `<html>portal</html>`, "failed", "HTTP 200"},
+		"claude":    {401, 403, "", `{"error":{"type":"forbidden"}}`, "blocked", "Claude: HTTP 403"},
+	}
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			r := Probe(context.Background(), fake(body), "https://test.invalid")
-			if r.Status == "done" || r.TokPerSec != 0 {
-				t.Fatalf("accepted invalid stream: %+v", r)
+			reply := func(code int) func(int32, http.ResponseWriter) {
+				return func(_ int32, w http.ResponseWriter) {
+					if c.header != "" {
+						w.Header().Set("Cf-Mitigated", c.header)
+					}
+					w.WriteHeader(code)
+					fmt.Fprint(w, c.body)
+				}
+			}
+			chatgpt, claude := newOrigin(t, reply(c.chatgpt)), newOrigin(t, reply(c.claude))
+			dial, targets := targets(chatgpt, claude, true)
+			r, session := Screen(context.Background(), dial, targets)
+			if r.Status != c.status || !strings.Contains(r.Error, c.reason) || session != nil {
+				t.Fatalf("got %+v session=%v", r, session)
 			}
 		})
 	}
-	r := Probe(context.Background(), fake(good.String()+terminal()), "https://test.invalid")
-	if r.Status != "done" || r.Tokens != Samples || r.FlowPass {
-		t.Fatalf("buffered stream must be complete but fail cadence: %+v", r)
+}
+
+func TestScreenFailsWhenSamplingBreaksMidway(t *testing.T) {
+	chatgpt := newOrigin(t, func(n int32, w http.ResponseWriter) {
+		if n > 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	claude := newOrigin(t, unauthorized(fixed(0)))
+	dial, targets := targets(chatgpt, claude, true)
+	if r, session := Screen(context.Background(), dial, targets); r.Status != "failed" || !strings.Contains(r.Error, "sample 3: HTTP 503") || session != nil {
+		t.Fatalf("got %+v", r)
 	}
 }
+
+func TestScreenRequiresVerifiedTLS(t *testing.T) {
+	chatgpt, claude := newOrigin(t, unauthorized(fixed(0))), newOrigin(t, unauthorized(fixed(0)))
+	dial, targets := targets(chatgpt, claude, false)
+	if r, _ := Screen(context.Background(), dial, targets); r.Status != "failed" || chatgpt.requests.Load() != 0 {
+		t.Fatalf("untrusted certificate accepted: %+v", r)
+	}
+}
+
+func TestScreenReportsDeadlineAsTimeout(t *testing.T) {
+	chatgpt := newOrigin(t, unauthorized(func(n int32) time.Duration {
+		if n > 1 {
+			return time.Second
+		}
+		return 0
+	}))
+	claude := newOrigin(t, unauthorized(fixed(0)))
+	dial, targets := targets(chatgpt, claude, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if r, _ := Screen(ctx, dial, targets); r.Status != "timeout" {
+		t.Fatalf("deadline must not look like a node failure: %+v", r)
+	}
+}
+
+func TestSummarizeUsesMedianAndMinimum(t *testing.T) {
+	if median, low := summarize([]float64{300, 100, 200, 500, 400}); median != 300 || low != 100 {
+		t.Fatalf("median=%v min=%v", median, low)
+	}
+	if median, _ := summarize([]float64{4, 1, 3, 2}); median != 2.5 {
+		t.Fatalf("even median=%v", median)
+	}
+}
+
 func TestDeadlineCoversQueuedAndActiveNodes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
@@ -103,6 +210,7 @@ func TestDeadlineCoversQueuedAndActiveNodes(t *testing.T) {
 		t.Fatal("queued requests must explicitly report unmeasured")
 	}
 }
+
 func TestDeadlineDoesNotWaitForUncooperativeAdapter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -116,63 +224,37 @@ func TestDeadlineDoesNotWaitForUncooperativeAdapter(t *testing.T) {
 	}
 }
 
-func Test1024RealStreamsWithin20Seconds(t *testing.T) {
+func TestFullScreenOf256NodesWithinBudget(t *testing.T) {
 	if testing.Short() {
-		t.Skip("8-second real SSE, two parallel waves")
+		t.Skip("real TLS connections for 256 nodes")
 	}
-	var connections atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		connections.Add(1)
-		defer connections.Add(-1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("X-Stream-Quality-Profile", Profile)
-		start := time.Now()
-		for i := 0; i < Samples; i++ {
-			wait := time.NewTimer(time.Until(start.Add(time.Duration(i) * 50 * time.Millisecond)))
-			select {
-			case <-r.Context().Done():
-				wait.Stop()
-				return
-			case <-wait.C:
-			}
-			fmt.Fprint(w, testFrame(i, float64(time.Since(start).Microseconds())/1000))
-			w.(http.Flusher).Flush()
-		}
-		fmt.Fprint(w, terminal())
-	}))
-	defer server.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), Budget)
-	defer cancel()
-	transport := &http.Transport{MaxConnsPerHost: MaxConcurrency, MaxIdleConnsPerHost: MaxConcurrency}
-	defer transport.CloseIdleConnections()
-	httpClient := &http.Client{Transport: transport}
-	var reported atomic.Bool
-	client := doerFunc(func(r *http.Request) (*http.Response, error) {
-		response, err := httpClient.Do(r)
-		if err != nil && reported.CompareAndSwap(false, true) {
-			t.Logf("first transport error: %v", err)
-		}
-		return response, err
-	})
-	jobs := make([]Job, 1024)
+	chatgpt := newOrigin(t, unauthorized(fixed(120*time.Millisecond)))
+	claude := newOrigin(t, unauthorized(fixed(120*time.Millisecond)))
+	dial, targets := targets(chatgpt, claude, true)
+	jobs := make([]Job, 256)
+	sessions := make([]*Session, len(jobs))
 	for i := range jobs {
-		jobs[i] = Job{Base: Result{Key: fmt.Sprint(i)}, Probe: func(ctx context.Context) Result { return Probe(ctx, client, server.URL) }}
+		i := i
+		jobs[i] = Job{Base: Result{Key: fmt.Sprint(i)}, Probe: func(ctx context.Context) Result {
+			r, s := Screen(ctx, dial, targets)
+			sessions[i] = s
+			return r
+		}}
 	}
 	start := time.Now()
-	results := Run(ctx, jobs, MaxConcurrency)
+	results := Run(context.Background(), jobs, MaxConcurrency)
 	elapsed := time.Since(start)
-	success := 0
-	for _, r := range results {
-		if r.Status == "done" {
-			success++
-		} else {
-			if success == 0 {
-				t.Logf("stream failed: %s %s", r.Status, r.Error)
-			}
+	done := 0
+	for i, r := range results {
+		if r.Status == "done" && r.LatencyMs >= 120 {
+			done++
+		} else if done == 0 {
+			t.Logf("node failed: %+v", r)
 		}
+		sessions[i].Close()
 	}
-	t.Logf("1024 nodes, peak limit %d, complete %d, elapsed %s", MaxConcurrency, success, elapsed)
-	if len(results) != 1024 || success != 1024 || elapsed >= 20*time.Second {
-		t.Fatal("all-node 20-second acceptance failed")
+	t.Logf("256 nodes, concurrency %d, done %d, connections %d, elapsed %s", MaxConcurrency, done, chatgpt.connections.Load(), elapsed)
+	if done != len(jobs) || chatgpt.connections.Load() != int32(len(jobs)) || elapsed >= Budget {
+		t.Fatal("full-screen budget acceptance failed")
 	}
 }

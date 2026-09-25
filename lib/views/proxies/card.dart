@@ -43,18 +43,18 @@ class ProxyCard extends ConsumerWidget {
             final record = store.recordFor(profileId, name);
             final good = SseHistory.success(record);
             final latest = SseHistory.object(record?['latest']);
-            final speed = good?['tokPerSec'] as num?;
+            final latency = good?['latencyMs'] as num?;
             return Tooltip(
               message:
-                  '模拟 SSE tok/s，不代表模型速度。${store.running ? '本轮测速中，历史成绩保留' : latest['error'] ?? latest['status'] ?? '尚未测速'}',
+                  'ChatGPT 热连接最小延迟。${store.running ? '本轮测速中，上次成绩保留' : latest['error'] ?? latest['status'] ?? '尚未测速'}',
               child: InkWell(
                 onTap: store.running
                     ? null
                     : () => runSseTest(context, name: name),
                 child: Text(
-                  speed == null
-                      ? (store.running ? '测速中…' : 'SSE 测速')
-                      : '${speed.toStringAsFixed(1)} tok/s',
+                  latency == null
+                      ? (store.running ? '测速中…' : '测延迟')
+                      : '${latency.round()} ms',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: context.textTheme.labelSmall?.copyWith(

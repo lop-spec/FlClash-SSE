@@ -1,15 +1,22 @@
+import 'dart:async';
+
 import 'package:fl_clash/core/controller.dart';
 import 'package:flutter/foundation.dart';
 
 class SseHistory extends ChangeNotifier {
   static final instance = SseHistory();
+  static const samples = 5;
   List<Map<String, dynamic>> nodes = [];
   Map<String, dynamic> history = {};
   List<Map<String, dynamic>> issues = [];
+  Map<String, dynamic> tournament = {};
+  Map<String, dynamic> failover = {};
   bool running = false;
   String error = '';
   int elapsedMs = 0;
   Set<String> attemptedKeys = {};
+  String? activeKey;
+  Duration pollInterval = const Duration(seconds: 3);
   int _revision = 0;
 
   static Map<String, dynamic> object(dynamic value) =>
@@ -19,16 +26,45 @@ class SseHistory extends ChangeNotifier {
       value is List ? value.map(object).toList() : [];
 
   static Map<String, dynamic>? success(dynamic record) {
-    final value = object(object(record)['lastSuccess']);
-    final speed = value['tokPerSec'];
+    final value = object(object(record)['latest']);
+    final latency = value['latencyMs'];
     return value['status'] == 'done' &&
-            value['tokens'] == 161 &&
-            speed is num &&
-            speed.isFinite &&
-            speed > 0 &&
-            speed < 100000
+            value['samples'] == samples &&
+            latency is num &&
+            latency.isFinite &&
+            latency > 0
         ? value
         : null;
+  }
+
+  static num? latency(dynamic record) => success(record)?['latencyMs'] as num?;
+
+  static int score(dynamic record) =>
+      (object(record)['score'] as num?)?.toInt() ?? 0;
+
+  /// 403 exits stay unusable even with points from an earlier tournament.
+  static bool unusable(dynamic record) => const [
+    'blocked',
+    'unsupported',
+  ].contains(object(object(record)['latest'])['status']);
+
+  bool get tournamentRunning => tournament['running'] == true;
+
+  int _rank(Map<String, dynamic> a, Map<String, dynamic> b) {
+    final x = object(history[a['key']]);
+    final y = object(history[b['key']]);
+    final points = score(y).compareTo(score(x));
+    if (points != 0) return points;
+    final awarded = ((y['lastAwardAt'] as num?) ?? 0).compareTo(
+      (x['lastAwardAt'] as num?) ?? 0,
+    );
+    if (awarded != 0) return awarded;
+    final speed = (latency(x) ?? double.infinity).compareTo(
+      latency(y) ?? double.infinity,
+    );
+    if (speed != 0) return speed;
+    final name = '${a['name']}'.compareTo('${b['name']}');
+    return name != 0 ? name : '${a['key']}'.compareTo('${b['key']}');
   }
 
   void accept(
@@ -71,13 +107,10 @@ class SseHistory extends ChangeNotifier {
       }
     }
     for (final entry in object(value['history']).entries) {
-      final next = object(entry.value);
-      final previous = object(history[entry.key]);
-      if (success(next) == null && success(previous) != null) {
-        next['lastSuccess'] = previous['lastSuccess'];
-        next['measuredAt'] = previous['measuredAt'];
-      }
-      history[entry.key] = next;
+      history[entry.key] = object(entry.value);
+    }
+    if (value.containsKey('tournament')) {
+      tournament = object(value['tournament']);
     }
     issues = objects(value['issues']);
     error = value['error']?.toString() ?? '';
@@ -92,6 +125,8 @@ class SseHistory extends ChangeNotifier {
     // A slow catalog must not replace a newer measurement or subscription list.
     if (revision != _revision || running) return;
     accept(value, measurement: false);
+    // Follow a tournament started elsewhere without blocking the caller.
+    if (tournamentRunning) unawaited(_guard(() => _follow(core, profiles)));
   }
 
   Future<void> run(
@@ -102,12 +137,9 @@ class SseHistory extends ChangeNotifier {
   }) async {
     if (running) return;
     _revision++;
-    running = true;
-    error = '';
     attemptedKeys = {};
     elapsedMs = 0;
-    notifyListeners();
-    try {
+    await _guard(() async {
       final result = await core.sseBatch(
         profiles,
         name: name,
@@ -115,11 +147,41 @@ class SseHistory extends ChangeNotifier {
       );
       if (result.isEmpty) throw StateError('SSE core returned no result');
       accept(result, replaceNodes: name == null);
+      if (name == null && tournamentRunning) await _follow(core, profiles);
+    });
+  }
+
+  Future<void> _guard(Future<void> Function() body) async {
+    running = true;
+    error = '';
+    notifyListeners();
+    try {
+      await body();
     } catch (e) {
-      error = '本轮未取得有效结果，历史成绩保留：$e';
+      error = '本轮未取得结果，上次成绩保留：$e';
     } finally {
       running = false;
       notifyListeners();
+    }
+  }
+
+  Future<void> _follow(CoreController core, List<int> profiles) async {
+    final startedAt = (tournament['startedAt'] as num?)?.toInt() ?? 0;
+    final limitMs = (tournament['limitMs'] as num?)?.toInt() ?? 0;
+    final deadline = DateTime.fromMillisecondsSinceEpoch(
+      startedAt + limitMs,
+    ).add(const Duration(minutes: 2));
+    while (tournamentRunning) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw StateError('淘汰赛超时未返回结果');
+      }
+      await Future<void>.delayed(pollInterval);
+      try {
+        final value = await core.sseCatalog(profiles);
+        if (value.isNotEmpty) accept(value, measurement: false);
+      } catch (_) {
+        continue;
+      }
     }
   }
 
@@ -135,14 +197,7 @@ class SseHistory extends ChangeNotifier {
         break;
       }
     }
-    matches.sort((a, b) {
-      final x = success(history[a['key']])?['tokPerSec'] as num?;
-      final y = success(history[b['key']])?['tokPerSec'] as num?;
-      final speed = (y ?? -1).compareTo(x ?? -1);
-      if (speed != 0) return speed;
-      final name = '${a['name']}'.compareTo('${b['name']}');
-      return name != 0 ? name : '${a['key']}'.compareTo('${b['key']}');
-    });
+    matches.sort(_rank);
     return matches;
   }
 
@@ -157,25 +212,60 @@ class SseHistory extends ChangeNotifier {
     return null;
   }
 
-  Map<String, dynamic>? candidate(Iterable<int> profileIds) {
-    final available = profileIds.toSet();
-    final sorted = [...nodes]
-      ..sort((a, b) {
-        final x = success(history[a['key']]);
-        final y = success(history[b['key']]);
-        return ((y?['tokPerSec'] as num?) ?? 0).compareTo(
-          (x?['tokPerSec'] as num?) ?? 0,
-        );
-      });
-    for (final node in sorted) {
-      final result = success(history[node['key']]);
-      if (result == null || result['flowPass'] != true) continue;
-      for (final alias in objects(node['aliases'])) {
-        if (available.contains(alias['profileId'])) {
-          return {...alias, 'key': node['key']};
-        }
+  Map<String, dynamic>? _entry(
+    Map<String, dynamic> node,
+    Set<int> available,
+  ) {
+    for (final alias in objects(node['aliases'])) {
+      if (available.contains(alias['profileId'])) {
+        return {...alias, 'key': node['key']};
       }
     }
     return null;
+  }
+
+  /// Scored nodes first, then the remaining reachable ones by latency.
+  List<Map<String, dynamic>> ranking(Iterable<int> profileIds) {
+    final available = profileIds.toSet();
+    final ordered =
+        nodes.where((node) {
+          final record = history[node['key']];
+          return !unusable(record) &&
+              (score(record) > 0 || success(record) != null);
+        }).toList()..sort(_rank);
+    return ordered.map((node) => _entry(node, available)).nonNulls.toList();
+  }
+
+  Map<String, dynamic>? candidate(Iterable<int> profileIds) {
+    final best = ranking(profileIds).firstOrNull;
+    return best != null && score(history[best['key']]) > 0 ? best : null;
+  }
+
+  /// The node after [currentKey] in the ranking, wrapping to the top.
+  Map<String, dynamic>? next(String? currentKey, Iterable<int> profileIds) {
+    final ranked = ranking(profileIds);
+    final index = ranked.indexWhere((entry) => entry['key'] == currentKey);
+    if (index < 0) return ranked.firstOrNull;
+    if (ranked.length < 2) return null;
+    return ranked[(index + 1) % ranked.length];
+  }
+
+  /// The GLOBAL path wins over the last explicit choice, which may be stale.
+  String? currentKey(int? profileId, Map<String, String> selectedMap) {
+    final selected = selectedMap['GLOBAL'];
+    for (final node in nodes) {
+      for (final alias in objects(node['aliases'])) {
+        if (alias['profileId'] == profileId &&
+            object(alias['selections'])['GLOBAL'] == selected) {
+          return node['key'] as String?;
+        }
+      }
+    }
+    return nodes.any((node) => node['key'] == activeKey) ? activeKey : null;
+  }
+
+  void recordFailover(Map<String, dynamic> event) {
+    failover = event;
+    notifyListeners();
   }
 }
