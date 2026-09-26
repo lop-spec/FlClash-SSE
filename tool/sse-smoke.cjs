@@ -15,7 +15,12 @@ let fail = false;
 const sockets = new Set();
 const processes = new Set();
 const services = [];
-const watchdog = setTimeout(() => { console.error('smoke deadline exceeded'); cleanup(); process.exit(1); }, 60000);
+// Hosted job logs need a signed-in viewer; annotations are public.
+function report(message) {
+  console.error(message);
+  if (process.env.GITHUB_ACTIONS) console.log('::error title=installed-core smoke::' + String(message).replace(/%/g, '%25').replace(/\r/g, '').replace(/\n/g, '%0A'));
+}
+const watchdog = setTimeout(() => { report('smoke deadline exceeded'); cleanup(); process.exit(1); }, 60000);
 function cleanup() {
   clearTimeout(watchdog);
   for (const socket of sockets) socket.destroy();
@@ -155,4 +160,4 @@ async function startCore() {
   const disk = JSON.parse(fs.readFileSync(path.join(home, 'node-score-v1.json'), 'utf8'));
   for (const [key, score] of Object.entries(scores)) assert.equal(disk.results[key].score || 0, score);
   console.log(JSON.stringify({ success: true, nodes: 3, memberships: 4, statuses, screenMs, tournament: { entrants: tournament.entrants?.length || 0, podium: tournament.podium?.length || 0, error: tournament.error }, scores, restoredAfterRestart: true, scoreKeptAfterFailure: true, home }));
-})().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(cleanup);
+})().catch(error => { report(error.stack || error.message); process.exitCode = 1; }).finally(cleanup);

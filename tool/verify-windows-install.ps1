@@ -1,5 +1,6 @@
 param([string]$PackageRoot = 'dist')
 $ErrorActionPreference = 'Stop'
+trap { Write-Output "::error title=install acceptance::$($_.Exception.Message)"; break }
 $registration = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\A06A5E0D-B8C9-4A3A-B89A-27274D0B708C_is1'
 if (Test-Path $registration) { throw 'An existing SSE installation must not be replaced by this temporary acceptance fixture' }
 $packages = @(Get-ChildItem $PackageRoot -Recurse -File -Filter '*setup*.exe')
