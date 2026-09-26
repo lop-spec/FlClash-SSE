@@ -52,12 +52,13 @@ type sseIssue struct {
 type sseRecord struct {
 	Latest      ssebench.Result `json:"latest"`
 	MeasuredAt  int64           `json:"measuredAt"`
-	Score       int             `json:"score"`
+	Score       float64         `json:"score"`
 	LastAwardAt int64           `json:"lastAwardAt,omitempty"`
 }
 type sseColo struct {
 	Location  string  `json:"location"`
 	LatencyMs float64 `json:"latencyMs"`
+	OffsetMs  float64 `json:"offsetMs"`
 	Nodes     int     `json:"nodes"`
 }
 type sseEntrant struct {
@@ -65,6 +66,8 @@ type sseEntrant struct {
 	Name   string  `json:"name"`
 	Alive  bool    `json:"alive"`
 	IdleMs float64 `json:"idleMs,omitempty"`
+	Place  int     `json:"place,omitempty"`
+	Points float64 `json:"points,omitempty"`
 }
 type sseTournament struct {
 	Running    bool         `json:"running"`
@@ -444,35 +447,53 @@ func mergeSSEResult(previous sseRecord, next ssebench.Result) sseRecord {
 	return previous
 }
 
-func awardPodium(history map[string]sseRecord, podium []string, now int64) {
-	for place, key := range podium {
-		if place >= len(ssebench.Awards) {
-			return
+func awardPoints(history map[string]sseRecord, keys []string, points []float64, now int64) {
+	for i, key := range keys {
+		if points[i] <= 0 {
+			continue
 		}
 		record := history[key]
-		record.Score += ssebench.Awards[place]
+		record.Score += points[i]
 		record.LastAwardAt = now
 		history[key] = record
 	}
 }
 
-// Exit colos decide how far Cloudflare still has to carry a request to the
-// ChatGPT origin, so they are compared by the median of their nodes.
-func rankColos(results []ssebench.Result) []sseColo {
-	latencies := map[string][]float64{}
+func median(values []float64) float64 {
+	sorted := append([]float64(nil), values...)
+	sort.Float64s(sorted)
+	n := len(sorted)
+	if n%2 == 0 {
+		return (sorted[n/2-1] + sorted[n/2]) / 2
+	}
+	return sorted[n/2]
+}
+
+const minColoNodes = 3
+
+// Edge-to-origin noise (~100 ms per request) is shared by a colo, so a colo of
+// several nodes lends its median offset and its nodes differ only by PING.
+func estimateColos(results []ssebench.Result) []sseColo {
+	offsets, pings := map[string][]float64{}, map[string][]float64{}
 	for _, r := range results {
 		if r.Status == "done" && r.Location != "" {
-			latencies[r.Location] = append(latencies[r.Location], r.LatencyMs)
+			offsets[r.Location] = append(offsets[r.Location], r.OffsetMs)
+			pings[r.Location] = append(pings[r.Location], r.PingMs)
 		}
 	}
-	colos := make([]sseColo, 0, len(latencies))
-	for location, values := range latencies {
-		sort.Float64s(values)
-		median := values[len(values)/2]
-		if len(values)%2 == 0 {
-			median = (values[len(values)/2-1] + median) / 2
+	colos := make([]sseColo, 0, len(offsets))
+	shared := map[string]float64{}
+	for location, values := range offsets {
+		if len(values) < minColoNodes {
+			continue
 		}
-		colos = append(colos, sseColo{Location: location, LatencyMs: median, Nodes: len(values)})
+		shared[location] = median(values)
+		colos = append(colos, sseColo{Location: location, OffsetMs: shared[location], LatencyMs: median(pings[location]) + shared[location], Nodes: len(values)})
+	}
+	for i := range results {
+		if offset, ok := shared[results[i].Location]; ok && results[i].Status == "done" {
+			results[i].EstimateMs = results[i].PingMs + offset
+		}
 	}
 	sort.Slice(colos, func(a, b int) bool {
 		if colos[a].LatencyMs != colos[b].LatencyMs {
@@ -647,6 +668,7 @@ func handleSSEBatch(params *SSEParams) sseCatalog {
 	}
 	results := ssebench.Run(ctx, jobs, ssebench.MaxConcurrency)
 	open := sessions.seal()
+	colos := estimateColos(results)
 	for _, result := range results {
 		if result.Status != "done" {
 			logError("SSE %s: %s", result.Status, result.Error)
@@ -657,7 +679,6 @@ func handleSSEBatch(params *SSEParams) sseCatalog {
 	contenders := []*sseContender{}
 	previous := catalog.Tournament
 	if full {
-		colos := rankColos(results)
 		top := map[string]bool{}
 		for i := 0; i < len(colos) && i < 2; i++ {
 			top[colos[i].Location] = true
@@ -726,6 +747,9 @@ func startTournament(home string, catalog *sseCatalog, contenders []*sseContende
 	if len(entrants) == 0 {
 		tournament.Running, tournament.FinishedAt = false, time.Now().UnixMilli()
 		tournament.Error = "no reachable node in the two fastest colos"
+		if len(tournament.Colos) == 0 {
+			tournament.Error = fmt.Sprintf("no colo has %d or more reachable nodes", minColoNodes)
+		}
 		logError("SSE tournament: %s", tournament.Error)
 		if err := writeSSEHistory(home, history, tournament); err != nil {
 			logError("SSE persistence: write failed")
@@ -748,7 +772,7 @@ func runTournament(home string, history map[string]sseRecord, entrants []*sseCon
 	}()
 	field := make([]ssebench.Entrant, len(entrants))
 	for i, c := range entrants {
-		field[i] = ssebench.Entrant{LatencyMs: c.result.LatencyMs, Since: c.since, Closed: c.session.Closed}
+		field[i] = ssebench.Entrant{LatencyMs: c.result.EstimateMs, Since: c.since, Closed: c.session.Closed}
 	}
 	placements := ssebench.Tournament(context.Background(), field, rules, func(i int, idle time.Duration) {
 		sseProgressMu.Lock()
@@ -758,21 +782,26 @@ func runTournament(home string, history map[string]sseRecord, entrants []*sseCon
 		log.Infoln("SSE tournament: %s dropped after %s idle", entrants[i].name, idle.Round(time.Second))
 	})
 	now := time.Now().UnixMilli()
+	points := ssebench.Points(placements)
+	keys := make([]string, len(placements))
 	podium := []string{}
-	for place, p := range placements {
+	for i, p := range placements {
 		c := entrants[p.Index]
+		keys[i] = c.key
 		record := history[c.key]
-		record.Latest.IdleMs, record.Latest.Place, record.Latest.Survived = p.IdleMs, place+1, p.Survived
+		record.Latest.IdleMs, record.Latest.Place, record.Latest.Survived = p.IdleMs, p.Place, p.Survived
 		history[c.key] = record
-		if place < len(ssebench.Awards) {
+		if points[i] > 0 {
 			podium = append(podium, c.key)
 		}
 	}
-	awardPodium(history, podium, now)
+	awardPoints(history, keys, points, now)
 	sseProgressMu.Lock()
-	for _, p := range placements {
+	for i, p := range placements {
+		entrant := &sseProgress.Entrants[p.Index]
+		entrant.Place, entrant.Points = p.Place, points[i]
 		if p.Survived {
-			sseProgress.Entrants[p.Index].IdleMs = p.IdleMs
+			entrant.IdleMs = p.IdleMs
 		}
 	}
 	sseProgress.Running, sseProgress.FinishedAt, sseProgress.Podium = false, now, podium

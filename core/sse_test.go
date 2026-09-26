@@ -27,10 +27,10 @@ func TestSSEHistoryKeepsLatestAttemptAndAccumulatesScores(t *testing.T) {
 		}
 	}
 	history := map[string]sseRecord{"a": old, "b": {}, "c": {}, "d": {}, "e": {Score: 1}}
-	awardPodium(history, []string{"b", "a", "e", "c", "d"}, 99)
-	for key, want := range map[string]int{"b": 4, "a": 10, "e": 3, "c": 1, "d": 0} {
+	awardPoints(history, []string{"b", "a", "e", "c", "d"}, []float64{3.5, 3, 2, 1.5, 0}, 99)
+	for key, want := range map[string]float64{"b": 3.5, "a": 10, "e": 3, "c": 1.5, "d": 0} {
 		if history[key].Score != want {
-			t.Fatalf("%s score %d, want %d", key, history[key].Score, want)
+			t.Fatalf("%s score %v, want %v", key, history[key].Score, want)
 		}
 	}
 	if history["b"].LastAwardAt != 99 || history["d"].LastAwardAt != 0 {
@@ -50,20 +50,26 @@ func TestSSEHistoryKeepsLatestAttemptAndAccumulatesScores(t *testing.T) {
 	}
 }
 
-func TestSSEColosRankByTheMedianOfTheirNodes(t *testing.T) {
+func TestSSEEstimatesUseTheColoOffsetAndTheNodePing(t *testing.T) {
 	results := []ssebench.Result{
-		{Status: "done", Location: "SIN", LatencyMs: 290},
-		{Status: "done", Location: "SIN", LatencyMs: 150},
-		{Status: "done", Location: "SIN", LatencyMs: 300},
-		{Status: "done", Location: "NRT", LatencyMs: 230},
-		{Status: "done", Location: "NRT", LatencyMs: 220},
-		{Status: "done", Location: "LAX", LatencyMs: 340},
-		{Status: "blocked", Location: "HKG", LatencyMs: 90},
-		{Status: "done", LatencyMs: 10},
+		{Status: "done", Location: "SIN", PingMs: 130, OffsetMs: 250, EstimateMs: 380},
+		{Status: "done", Location: "SIN", PingMs: 125, OffsetMs: 140},
+		{Status: "done", Location: "SIN", PingMs: 140, OffsetMs: 130},
+		{Status: "done", Location: "NRT", PingMs: 150, OffsetMs: 70},
+		{Status: "done", Location: "NRT", PingMs: 206, OffsetMs: 90},
+		{Status: "done", Location: "NRT", PingMs: 160, OffsetMs: 80},
+		{Status: "done", Location: "SEA", PingMs: 357, OffsetMs: -173, EstimateMs: 406},
+		{Status: "blocked", Location: "HKG", PingMs: 40, OffsetMs: 10},
+		{Status: "done", PingMs: 100, OffsetMs: 50, EstimateMs: 150},
 	}
-	colos := rankColos(results)
-	if len(colos) != 3 || colos[0].Location != "NRT" || colos[0].LatencyMs != 225 || colos[0].Nodes != 2 || colos[1].Location != "SIN" || colos[1].LatencyMs != 290 {
-		t.Fatalf("got %+v", colos)
+	colos := estimateColos(results)
+	if len(colos) != 2 || colos[0].Location != "NRT" || colos[0].OffsetMs != 80 || colos[0].LatencyMs != 240 || colos[0].Nodes != 3 || colos[1].Location != "SIN" || colos[1].LatencyMs != 270 {
+		t.Fatalf("a colo needs three nodes to be ranked: %+v", colos)
+	}
+	for i, want := range []float64{270, 265, 280, 230, 286, 240, 406, 0, 150} {
+		if results[i].EstimateMs != want {
+			t.Fatalf("node %d estimate %v, want %v", i, results[i].EstimateMs, want)
+		}
 	}
 }
 

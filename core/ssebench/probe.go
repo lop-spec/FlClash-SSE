@@ -20,7 +20,8 @@ import (
 const Profile = "chatgpt-claude-colo-idle-v1"
 const ChatGPTURL = "https://chatgpt.com/backend-api/codex/models"
 const ClaudeURL = "https://api.anthropic.com/v1/models"
-const Samples = 5
+const Samples = 3
+const Pings = 6
 const MaxConcurrency = 32
 const Budget = 30 * time.Second
 
@@ -36,6 +37,9 @@ type Result struct {
 	Samples    int     `json:"samples"`
 	LatencyMs  float64 `json:"latencyMs"`
 	MedianMs   float64 `json:"medianMs"`
+	PingMs     float64 `json:"pingMs"`
+	OffsetMs   float64 `json:"offsetMs"`
+	EstimateMs float64 `json:"estimateMs"`
 	ConnectMs  float64 `json:"connectMs"`
 	HTTPStatus int     `json:"httpStatus,omitempty"`
 	Location   string  `json:"location,omitempty"`
@@ -162,6 +166,17 @@ func send(ctx context.Context, cc *http2.ClientConn, rawURL string) (reply, erro
 	return reply{resp.StatusCode, resp.Header.Get("Cf-Ray"), resp.Header.Get("Cf-Mitigated"), string(body), ms}, nil
 }
 
+// PING is answered by the Cloudflare edge, so it times only this node's path.
+func ping(ctx context.Context, cc *http2.ClientConn) (float64, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	begin := time.Now()
+	if err := cc.Ping(ctx); err != nil {
+		return 0, err
+	}
+	return millis(time.Since(begin)), nil
+}
+
 // An unauthenticated 401 is the only proof the exit reached the service;
 // region blocks and Cloudflare challenges answer 403 before authentication.
 func classify(r reply) (string, string) {
@@ -233,7 +248,17 @@ func screenChatGPT(ctx context.Context, dial Dialer, t Targets) (Result, *Sessio
 		return Result{Status: status, Error: reason, HTTPStatus: first.status, ConnectMs: connectMs}, nil
 	}
 	values := make([]float64, 0, Samples)
-	for i := 0; i < Samples; i++ {
+	pings := make([]float64, 0, Pings)
+	for i := 0; i < Pings; i++ {
+		p, err := ping(ctx, s.cc)
+		if err != nil {
+			s.Close()
+			return failure(ctx, "connection dropped while pinging"), nil
+		}
+		pings = append(pings, p)
+		if i >= Samples {
+			continue
+		}
 		r, err := send(ctx, s.cc, t.ChatGPT)
 		if err != nil {
 			s.Close()
@@ -246,11 +271,15 @@ func screenChatGPT(ctx context.Context, dial Dialer, t Targets) (Result, *Sessio
 		values = append(values, r.ms)
 	}
 	median, low := summarize(values)
+	pingMs, _ := summarize(pings)
 	return Result{
 		Status:     "done",
 		Samples:    Samples,
 		LatencyMs:  low,
 		MedianMs:   median,
+		PingMs:     pingMs,
+		OffsetMs:   median - pingMs,
+		EstimateMs: median,
 		ConnectMs:  connectMs,
 		HTTPStatus: first.status,
 		Location:   location(first.ray),

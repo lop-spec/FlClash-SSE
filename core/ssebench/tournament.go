@@ -18,6 +18,7 @@ type Placement struct {
 	Index    int
 	IdleMs   float64
 	Survived bool
+	Place    int
 }
 
 type Rules struct {
@@ -26,9 +27,11 @@ type Rules struct {
 	// Tie groups near-simultaneous deaths of relays sharing a timeout; latency
 	// ranks inside a group, including a last survivor that barely outlived it.
 	Tie time.Duration
+	// BandMs keeps tied entrants equal below this gap; PING retests vary ~3-4 ms.
+	BandMs float64
 }
 
-var DefaultRules = Rules{Limit: 15 * time.Minute, Poll: time.Second, Tie: 5 * time.Second}
+var DefaultRules = Rules{Limit: 15 * time.Minute, Poll: time.Second, Tie: 5 * time.Second, BandMs: 15}
 
 func Tournament(ctx context.Context, entrants []Entrant, rules Rules, fallen func(index int, idle time.Duration)) []Placement {
 	start := time.Now()
@@ -81,6 +84,7 @@ watch:
 		}
 	}
 	sort.SliceStable(placements, func(a, b int) bool { return placements[a].IdleMs > placements[b].IdleMs })
+	latency := func(p Placement) float64 { return entrants[p.Index].LatencyMs }
 	tie := millis(rules.Tie)
 	for lo := 0; lo < len(placements); {
 		hi := lo + 1
@@ -88,10 +92,37 @@ watch:
 			hi++
 		}
 		group := placements[lo:hi]
-		sort.SliceStable(group, func(a, b int) bool {
-			return entrants[group[a].Index].LatencyMs < entrants[group[b].Index].LatencyMs
-		})
+		sort.SliceStable(group, func(a, b int) bool { return latency(group[a]) < latency(group[b]) })
+		for band := 0; band < len(group); {
+			next := band + 1
+			for next < len(group) && latency(group[next])-latency(group[band]) < rules.BandMs {
+				next++
+			}
+			for i := band; i < next; i++ {
+				group[i].Place = lo + band + 1
+			}
+			band = next
+		}
 		lo = hi
 	}
 	return placements
+}
+
+func Points(placements []Placement) []float64 {
+	points := make([]float64, len(placements))
+	for lo := 0; lo < len(placements); {
+		hi := lo + 1
+		for hi < len(placements) && placements[hi].Place == placements[lo].Place {
+			hi++
+		}
+		total := 0.0
+		for i := lo; i < hi && i < len(Awards); i++ {
+			total += float64(Awards[i])
+		}
+		for i := lo; i < hi; i++ {
+			points[i] = total / float64(hi-lo)
+		}
+		lo = hi
+	}
+	return points
 }

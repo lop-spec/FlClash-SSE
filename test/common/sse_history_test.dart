@@ -195,6 +195,19 @@ void main() {
     store.dispose();
   });
 
+  test('latency prefers the colo estimate and scores keep one decimal', () {
+    expect(
+      SseHistory.latency({
+        'latest': {...done(240), 'estimateMs': 228},
+      }),
+      228,
+    );
+    expect(SseHistory.latency({'latest': done(240)}), 240);
+    expect(SseHistory.points(4.0), '4');
+    expect(SseHistory.points(10 / 9), '1.1');
+    expect(SseHistory.score({'score': 3.5}), 3.5);
+  });
+
   test('invalid or incomplete measurements have no latency', () {
     for (final latency in [double.nan, double.infinity, -1.0, 0.0]) {
       expect(SseHistory.latency({'latest': done(latency)}), isNull);

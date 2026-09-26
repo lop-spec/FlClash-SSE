@@ -43,7 +43,7 @@ class ProxyCard extends ConsumerWidget {
             final record = store.recordFor(profileId, name);
             final good = SseHistory.success(record);
             final latest = SseHistory.object(record?['latest']);
-            final latency = good?['latencyMs'] as num?;
+            final latency = SseHistory.latency(record);
             return Tooltip(
               message:
                   'ChatGPT 热连接最小延迟。${store.running ? '本轮测速中，上次成绩保留' : latest['error'] ?? latest['status'] ?? '尚未测速'}',

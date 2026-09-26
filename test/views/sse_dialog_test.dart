@@ -472,8 +472,15 @@ void main() {
     store.accept({
       'history': {
         'fast': {
-          'score': 8,
-          'latest': {...done(180), 'place': 1, 'idleMs': 169000, 'survived': true},
+          'score': 3.5,
+          'latest': {
+            ...done(180),
+            'estimateMs': 176,
+            'pingMs': 98,
+            'place': 1,
+            'idleMs': 169000,
+            'survived': true,
+          },
         },
         'slow': {
           'score': 1,
@@ -487,8 +494,20 @@ void main() {
         'colos': colos,
         'podium': ['fast', 'slow'],
         'entrants': [
-          {'key': 'fast', 'name': '新加坡 · SG 02', 'alive': true, 'idleMs': 169000},
-          {'key': 'slow', 'name': '香港 · HK 01', 'alive': false, 'idleMs': 47000},
+          {
+            'key': 'fast',
+            'name': '新加坡 · SG 02',
+            'alive': true,
+            'idleMs': 169000,
+            'place': 1,
+          },
+          {
+            'key': 'slow',
+            'name': '香港 · HK 01',
+            'alive': false,
+            'idleMs': 47000,
+            'place': 2,
+          },
         ],
       },
     }, measurement: false);
@@ -503,7 +522,20 @@ void main() {
     expect(find.textContaining('Claude 连接失败（ECONNRESET）→ 香港 · HK 01'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('sse-group-1')));
     await tester.pumpAndSettle();
-    expect(find.text('8分 · 180ms'), findsOneWidget);
+    expect(find.text('3.5分 · 176ms'), findsOneWidget);
+    store.accept({
+      'tournament': {
+        'running': false,
+        'colos': colos,
+        'podium': ['fast', 'slow'],
+        'entrants': [
+          {'key': 'fast', 'name': '新加坡 · SG 02', 'idleMs': 169000, 'place': 1},
+          {'key': 'slow', 'name': '香港 · HK 01', 'idleMs': 168000, 'place': 1},
+        ],
+      },
+    }, measurement: false);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('冠军 新加坡 · SG 02 等 2 个并列'), findsOneWidget);
     store.accept({
       'tournament': {'running': false, 'error': 'no reachable node in the two fastest colos'},
     }, measurement: false);

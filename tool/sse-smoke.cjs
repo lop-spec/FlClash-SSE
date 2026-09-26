@@ -103,17 +103,18 @@ async function startCore() {
 }
 
 (async () => {
-  const ports = await Promise.all([proxy(), proxy()]);
+  const ports = await Promise.all([proxy(), proxy(), proxy()]);
   fs.mkdirSync(path.join(home, 'profiles'));
   const node = (name, port) => `  - {name: ${name}, type: http, server: 127.0.0.1, port: ${port}}\n`;
   fs.writeFileSync(path.join(home, 'profiles/1.yaml'), 'proxies:\n' + node('node-one', ports[0]) + '\nproxy-groups:\n  - {name: Select, type: select, proxies: [node-one]}\n');
-  fs.writeFileSync(path.join(home, 'profiles/2.yaml'), 'proxies:\n' + node('same-node-renamed', ports[0]) + node('node-two', ports[1]));
+  // Three nodes share this runner's exit, the fewest that form a ranked colo.
+  fs.writeFileSync(path.join(home, 'profiles/2.yaml'), 'proxies:\n' + node('same-node-renamed', ports[0]) + node('node-two', ports[1]) + node('node-three', ports[2]));
   let core = await startCore();
   const start = Date.now();
   const initial = await core.call('sseBatch', { profiles: [1, 2], tournamentLimitMs: 4000 });
   assert.equal(initial.error, undefined);
-  assert.equal(initial.nodes.length, 2);
-  assert.equal(initial.nodes.reduce((n, node) => n + node.aliases.length, 0), 3);
+  assert.equal(initial.nodes.length, 3);
+  assert.equal(initial.nodes.reduce((n, node) => n + node.aliases.length, 0), 4);
   assert.equal(initial.issues.length, 0);
   const statuses = {};
   for (const node of initial.nodes) {
@@ -121,7 +122,7 @@ async function startCore() {
     // A hosted runner exit may be refused by ChatGPT or Claude; that is still a
     // definite classification, unlike a transport failure or timeout.
     assert.ok(['done', 'blocked'].includes(latest.status), JSON.stringify(latest));
-    if (latest.status === 'done') assert.ok(latest.samples === 5 && latest.latencyMs > 0 && latest.location, JSON.stringify(latest));
+    if (latest.status === 'done') assert.ok(latest.samples === 3 && latest.latencyMs > 0 && latest.pingMs >= 0 && latest.estimateMs > 0 && latest.location, JSON.stringify(latest));
     statuses[node.key] = latest.status;
   }
   const screenMs = Date.now() - start; assert.ok(screenMs < 30000);
@@ -133,12 +134,14 @@ async function startCore() {
   }
   assert.equal(tournament.running, false, 'tournament must finish within its limit');
   const reachable = Object.values(statuses).filter(s => s === 'done').length;
-  if (reachable) assert.equal(tournament.podium.length, reachable, JSON.stringify(tournament));
+  if (reachable === 3) assert.equal(tournament.podium?.length, 3, JSON.stringify(tournament));
   else assert.ok(tournament.error, 'an empty field must say why no tournament ran');
   const scored = await core.call('sseCatalog', { profiles: [1, 2] });
   const scores = {};
   for (const node of initial.nodes) scores[node.key] = scored.history[node.key].score || 0;
-  if (reachable) assert.deepEqual(Object.values(scores).sort(), reachable === 2 ? [3, 4] : [0, 4]);
+  const total = Object.values(scores).reduce((a, b) => a + b, 0);
+  if (reachable === 3) assert.ok(Object.values(scores).every(s => s > 0) && Math.abs(total - 9) < 1e-9, JSON.stringify(scores));
+  else assert.equal(total, 0, JSON.stringify(scores));
   await core.close();
   fail = true;
   core = await startCore();
@@ -151,5 +154,5 @@ async function startCore() {
   await core.close();
   const disk = JSON.parse(fs.readFileSync(path.join(home, 'node-score-v1.json'), 'utf8'));
   for (const [key, score] of Object.entries(scores)) assert.equal(disk.results[key].score || 0, score);
-  console.log(JSON.stringify({ success: true, nodes: 2, memberships: 3, statuses, screenMs, tournament: { entrants: tournament.entrants?.length || 0, podium: tournament.podium?.length || 0, error: tournament.error }, scores, restoredAfterRestart: true, scoreKeptAfterFailure: true, home }));
+  console.log(JSON.stringify({ success: true, nodes: 3, memberships: 4, statuses, screenMs, tournament: { entrants: tournament.entrants?.length || 0, podium: tournament.podium?.length || 0, error: tournament.error }, scores, restoredAfterRestart: true, scoreKeptAfterFailure: true, home }));
 })().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(cleanup);

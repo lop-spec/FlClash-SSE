@@ -77,6 +77,10 @@ func TestScreenMeasuresSequentialWarmRequestsAndKeepsTheConnection(t *testing.T)
 	if r.LatencyMs < 40 || r.LatencyMs > r.MedianMs || r.MedianMs > 400 || r.ConnectMs <= 0 {
 		t.Fatalf("latency outside the served delay: %+v", r)
 	}
+	// Loopback PING is below the Windows timer resolution and may read as zero.
+	if r.PingMs < 0 || r.PingMs >= r.LatencyMs || r.OffsetMs < 35 || r.EstimateMs != r.MedianMs || r.OffsetMs != r.MedianMs-r.PingMs {
+		t.Fatalf("PING must isolate the path from the served delay: %+v", r)
+	}
 	if chatgpt.connections.Load() != 1 || chatgpt.requests.Load() != Samples+1 || claude.requests.Load() != 1 {
 		t.Fatalf("connections=%d requests=%d claude=%d", chatgpt.connections.Load(), chatgpt.requests.Load(), claude.requests.Load())
 	}

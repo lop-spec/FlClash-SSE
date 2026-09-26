@@ -216,8 +216,8 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                     ),
                     const Tooltip(
                       message:
-                          '全部测速：每个节点连 chatgpt.com 和 api.anthropic.com，只认未登录的 401，不调用模型；ChatGPT 热连接连测 5 次取最小值。\n'
-                          '按出口机房的中位延迟选出最快的两个机房，其中所有节点保持空闲连接，先被掐断的先淘汰，前四名依次加 4、3、2、1 分并累计。\n'
+                          '全部测速：每个节点连 chatgpt.com 和 api.anthropic.com，只认未登录的 401，不调用模型；估算往返 = 节点 PING + 该出口机房到源站的中位数。\n'
+                          '选出估算往返最快的两个机房，其中所有节点保持空闲连接，先被掐断的先淘汰；同时断开且往返相差不到 15ms 的并列，前四名的 4、3、2、1 分由并列者平分并累计。\n'
                           '重启切到最高分节点；Claude 会话或 GPT 桥出现真实连接失败时切到下一名。',
                       child: Icon(Icons.info_outline, size: 18),
                     ),
@@ -510,16 +510,18 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     final entrants = SseHistory.objects(t['entrants']);
     final podium = (t['podium'] as List?) ?? const [];
     if (podium.isEmpty) return '尚无淘汰赛结果';
-    final winner = entrants.firstWhere(
-      (e) => e['key'] == podium.first,
-      orElse: () => {},
-    );
+    var champions = entrants.where((e) => e['place'] == 1).toList();
+    if (champions.isEmpty) {
+      champions = entrants.where((e) => e['key'] == podium.first).toList();
+    }
+    final winner = champions.firstOrNull ?? {};
+    final shared = champions.length > 1 ? ' 等 ${champions.length} 个并列' : '';
     final idle = ((winner['idleMs'] as num?) ?? 0) / 1000;
     final finishedAt = (t['finishedAt'] as num?)?.toInt();
     final when = finishedAt == null
         ? ''
         : ' · ${DateTime.fromMillisecondsSinceEpoch(finishedAt).toLocal().toString().substring(5, 16)}';
-    return '最近一场：${_colos()} · ${entrants.length} 个节点 · 冠军 ${winner['name'] ?? '—'}（空闲存活 ${idle.toStringAsFixed(0)} 秒）$when';
+    return '最近一场：${_colos()} · ${entrants.length} 个节点 · 冠军 ${winner['name'] ?? '—'}$shared（空闲存活 ${idle.toStringAsFixed(0)} 秒）$when';
   }
 
   String _failoverSummary() {
@@ -542,17 +544,20 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
     final record = SseHistory.object(store.history[entry['key']]);
     final good = SseHistory.success(record);
     final latest = SseHistory.object(record['latest']);
-    final latency = good?['latencyMs'] as num?;
+    final latency = SseHistory.latency(record);
     final score = SseHistory.score(record);
     String ms(String key) => (good?[key] as num?)?.round().toString() ?? '—';
     final measuredAt = (record['measuredAt'] as num?)?.toInt();
     final location = good?['location'];
     final place = (latest['place'] as num?)?.toInt();
     final idle = ((latest['idleMs'] as num?) ?? 0) / 1000;
+    final ping = good?['pingMs'] as num?;
     final details = [
-      '累计得分 $score',
+      '累计得分 ${SseHistory.points(score)}',
       if (good != null) ...[
-        'ChatGPT 热连接 5 次：最小 ${ms('latencyMs')} ms · 中位 ${ms('medianMs')} ms',
+        if (latency != null && ping != null)
+          'ChatGPT 估算往返 ${latency.round()} ms = PING ${ping.round()} + 机房到源站 ${(latency - ping).round()}',
+        '401 实测：最小 ${ms('latencyMs')} ms · 中位 ${ms('medianMs')} ms',
         '建连 ${ms('connectMs')} ms${location == null ? '' : ' · 出口机房 $location'}',
       ] else
         '尚无有效延迟成绩',
@@ -636,7 +641,7 @@ class _ProxiesViewState extends ConsumerState<ProxiesView> {
                   ),
                   child: Text(
                     [
-                      if (score > 0) '$score分',
+                      if (score > 0) '${SseHistory.points(score)}分',
                       latency == null ? '—' : '${latency.round()}ms',
                     ].join(' · '),
                     maxLines: 1,

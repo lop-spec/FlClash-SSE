@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 
 class SseHistory extends ChangeNotifier {
   static final instance = SseHistory();
-  static const samples = 5;
+  static const samples = 3;
   List<Map<String, dynamic>> nodes = [];
   Map<String, dynamic> history = {};
   List<Map<String, dynamic>> issues = [];
@@ -37,10 +37,21 @@ class SseHistory extends ChangeNotifier {
         : null;
   }
 
-  static num? latency(dynamic record) => success(record)?['latencyMs'] as num?;
+  /// PING plus the colo's edge-to-origin median, falling back to the raw 401.
+  static num? latency(dynamic record) {
+    final value = success(record);
+    final estimate = value?['estimateMs'];
+    return estimate is num && estimate > 0
+        ? estimate
+        : value?['latencyMs'] as num?;
+  }
 
-  static int score(dynamic record) =>
-      (object(record)['score'] as num?)?.toInt() ?? 0;
+  static double score(dynamic record) =>
+      (object(record)['score'] as num?)?.toDouble() ?? 0;
+
+  static String points(num value) => value == value.roundToDouble()
+      ? value.round().toString()
+      : value.toStringAsFixed(1);
 
   /// 403 exits stay unusable even with points from an earlier tournament.
   static bool unusable(dynamic record) => const [

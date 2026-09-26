@@ -119,3 +119,45 @@ func TestTournamentHandlesNoEntrantsAndCancellation(t *testing.T) {
 		t.Fatalf("cancellation not honoured: %+v", placements)
 	}
 }
+
+func TestTournamentSharesPlacesWithinTheLatencyBand(t *testing.T) {
+	rules := quick
+	rules.BandMs = 15
+	rules.Limit = 80 * time.Millisecond
+	start := time.Now()
+	entrants := []Entrant{
+		{LatencyMs: 150, Closed: dies(start, 0)},
+		{LatencyMs: 140, Closed: dies(start, 0)},
+		{LatencyMs: 158, Closed: dies(start, 0)},
+		{LatencyMs: 230, Closed: dies(start, 0)},
+		{LatencyMs: 90, Closed: dies(start, 10*time.Millisecond)},
+	}
+	placements := Tournament(context.Background(), entrants, rules, nil)
+	places := make([]int, len(placements))
+	for i, p := range placements {
+		places[i] = p.Place
+	}
+	if got := order(placements); !same(got, []int{1, 0, 2, 3, 4}) || !same(places, []int{1, 1, 3, 4, 5}) {
+		t.Fatalf("order %v places %v", got, places)
+	}
+	points := Points(placements)
+	want := []float64{3.5, 3.5, 2, 1, 0}
+	for i := range want {
+		if points[i] != want[i] {
+			t.Fatalf("points %v, want %v", points, want)
+		}
+	}
+}
+
+func TestPointsSplitTheAwardsOfASharedPlace(t *testing.T) {
+	five := []Placement{{Place: 1}, {Place: 1}, {Place: 1}, {Place: 1}, {Place: 1}}
+	for _, p := range Points(five) {
+		if p != 2 {
+			t.Fatalf("five equal entrants share 10 points: %v", Points(five))
+		}
+	}
+	solo := Points([]Placement{{Place: 1}, {Place: 2}, {Place: 3}})
+	if solo[0] != 4 || solo[1] != 3 || solo[2] != 2 {
+		t.Fatalf("distinct places keep their awards: %v", solo)
+	}
+}
